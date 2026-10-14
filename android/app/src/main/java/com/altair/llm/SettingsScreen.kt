@@ -209,8 +209,18 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             item { SectionHeader("About") }
             item { SettingRow("Altair", "0.1.0 - local llama.cpp on-device", null) }
 
-            item { SectionHeader("Diagnostics") }
+            item { SectionHeader("Memory") }
             item {
+                var memCount by remember { mutableStateOf(MemoryStore.count(context)) }
+                SettingRow(
+                    "Long-term memory",
+                    "$memCount item(s) — facts and compacted chat episodes"
+                ) {
+                    TextButton(onClick = { MemoryStore.clear(context); memCount = 0 }) { Text("Clear") }
+                }
+            }
+
+            item { SectionHeader("Diagnostics") }            item {
                 val log = remember { mutableStateOf(LogRing.dump()) }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {

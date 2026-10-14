@@ -431,7 +431,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- generation ---------------------------------------------------------
 
-    private fun buildPrompt(preset: PresetEngine.Preset, turns: List<Msg>, thinking: Boolean): String {
+    private fun buildPrompt(
+        preset: PresetEngine.Preset,
+        turns: List<Msg>,
+        thinking: Boolean,
+        memories: List<String> = emptyList()
+    ): String {
         // Apply the Qwen3 soft switch to the final user turn first.
         val prepared = turns.mapIndexed { i, m ->
             var c = m.content
@@ -457,11 +462,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         if (budgeted.summarized) {
             LogRing.add("budget", "compacted ${budgeted.droppedTurns} turn(s) to fit ctx=$ctxTokens")
+            // §3 episodic memory: archive what we dropped so it can be recalled.
+            val keptLast = budgeted.turns.lastOrNull()?.content?.take(120) ?: ""
+            runCatching {
+                MemoryStore.addEpisode(
+                    getApplication(),
+                    current()?.id,
+                    "Compacted ${budgeted.droppedTurns} older message(s) in this chat; resuming after: $keptLast"
+                )
+            }
         }
 
         val roles = mutableListOf<String>()
         val contents = mutableListOf<String>()
         if (SYSTEM_PROMPT.isNotBlank()) { roles += "system"; contents += SYSTEM_PROMPT }
+        if (memories.isNotEmpty()) {
+            roles += "system"
+            contents += ("Relevant long-term memory:\n" + memories.joinToString("\n") { "- $it" })
+            LogRing.add("memory", "injected ${memories.size} memory snippet(s)")
+        }
         budgeted.turns.forEach { roles += it.role; contents += it.content }
 
         val tmpl = if (preset.chatTemplate == "gguf" || preset.chatTemplate == "none") "" else preset.chatTemplate
@@ -525,7 +544,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         if (block.isNotBlank()) query = block + "\n\nQuestion: " + text
                     }
                     val turns = chat.messages.dropLast(1) + Msg("user", query)
-                    val prompt = buildPrompt(preset, turns, s2.thinking)
+                    // §3 retrieval: pull relevant long-term memory; depth scales
+                    // with the model's context profile (more room => more recall).
+                    val depth = ModelProfile(
+                        id = "local", label = preset.family,
+                        tier = ModelProfile.Tier.LOCAL_DEVICE, contextTokens = s2.contextSize
+                    ).retrievalDepth
+                    val mems = runCatching { MemoryStore.search(getApplication(), text, depth) }
+                        .getOrDefault(emptyList()).map { it.text }
+                    val prompt = buildPrompt(preset, turns, s2.thinking, mems)
                     runCatching {
                         if (mediaPath != null) {
                             LlamaBridge.generateWithMedia(prompt, mediaPath, MAX_TOKENS, preset.temperature, preset.topP) { t ->
