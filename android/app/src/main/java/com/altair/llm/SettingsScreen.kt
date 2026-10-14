@@ -283,7 +283,8 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             item {
                 SettingRow(
                     "Agent roles",
-                    AgentRoles.builtins.joinToString(", ") { it.name } + "  ·  use /agent <task> in chat"
+                    AgentRoles.builtins.joinToString(", ") { it.name } + "  ·  use /agent <task> in chat",
+                    null
                 )
             }
             item {
