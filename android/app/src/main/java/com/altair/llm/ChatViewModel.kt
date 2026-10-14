@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -71,7 +72,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         // GPU policy: CPU by default. GPU (Vulkan) is opt-in and, before it is
         // ever used in the UI process, it must pass an isolated :gpuprobe load
-        // (see probeGpu) — so a flaky driver can never crash the app on install.
+        // (see probeNative) — so a flaky driver can never crash the app on install.
         var gpuPref = prefs.getInt(KEY_GPU_LAYERS, 0)
         var autoPref = prefs.getBoolean(KEY_GPU_AUTO, false)
         if (prefs.getBoolean(KEY_GPU_ATTEMPT, false)) {
@@ -194,21 +195,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Verify GPU offload in the isolated :gpuprobe process. Returns true only if
-     * that process loaded the model with GPU successfully. A driver crash there
-     * is contained (it fires onServiceDisconnected / returns a clean exit) and
-     * never reaches the UI process. Blocking; call from Dispatchers.IO.
+     * Verify GPU offload AND projector loading in the isolated :nativeprobe
+     * process. Returns a [ProbeResult]; a driver crash there is contained (the
+     * progress file shows which step died) and never reaches the UI process.
+     * Blocking; call from Dispatchers.IO.
      */
-    private fun probeGpu(path: String, ctx: Int, threads: Int, ngl: Int): Boolean {
-        if (!LlamaBridge.supportsGpu()) return false
+    private data class ProbeResult(val gpuOk: Boolean, val projectorOk: Boolean, val detail: String)
+
+    private fun probeNative(path: String, mmproj: String?, ctx: Int, threads: Int, ngl: Int): ProbeResult {
         val app = getApplication<Application>()
+        val marker = File(app.filesDir, NativeProbeService.PROGRESS_FILE)
+        runCatching { marker.delete() }
+
         val latch = CountDownLatch(1)
         val result = intArrayOf(-1)
+        var progress = ""
 
         val clientMessenger = Messenger(
             Handler(Looper.getMainLooper()) { msg ->
-                if (msg.what == GpuProbeService.MSG_RESULT) {
+                if (msg.what == NativeProbeService.MSG_RESULT) {
                     result[0] = msg.arg1
+                    progress = msg.data?.getString("progress") ?: ""
                     latch.countDown()
                 }
                 true
@@ -224,43 +231,47 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val b = Bundle().apply {
                     putString("path", path)
+                    putString("mmproj", mmproj.orEmpty())
                     putInt("ctx", ctx)
                     putInt("threads", threads)
                     putInt("ngl", ngl)
                 }
-                val m = Message.obtain(null, GpuProbeService.MSG_LOAD)
+                val m = Message.obtain(null, NativeProbeService.MSG_LOAD)
                 m.data = b
                 m.replyTo = clientMessenger
                 try {
                     Messenger(service).send(m)
                 } catch (e: RemoteException) {
-                    Log.w(TAG, "gpu probe send failed", e)
                     result[0] = -101
                     latch.countDown()
                 }
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
-                // Probe process died (native crash contained there).
-                Log.w(TAG, "gpu probe process died — GPU unsafe")
-                result[0] = -100
+                // Probe process died (native fault contained there).
+                LogRing.add("probe", "probe process died during native load")
                 latch.countDown()
             }
         }
 
         val bound = try {
-            app.bindService(Intent(app, GpuProbeService::class.java), conn, Context.BIND_AUTO_CREATE)
+            app.bindService(Intent(app, NativeProbeService::class.java), conn, Context.BIND_AUTO_CREATE)
         } catch (e: Exception) {
-            Log.w(TAG, "bindService to gpu probe failed", e)
             false
         }
-        if (!bound) return false
+        if (!bound) {
+            LogRing.add("probe", "could not bind probe service")
+            return ProbeResult(gpuOk = false, projectorOk = false, detail = "bind failed")
+        }
 
-        val done = latch.await(180, TimeUnit.SECONDS)
+        val done = latch.await(240, TimeUnit.SECONDS)
         runCatching { app.unbindService(conn) }
-        val ok = done && result[0] == 0
-        Log.i(TAG, "gpu probe result: done=$done rc=${result[0]} ok=$ok")
-        return ok
+        if (progress.isBlank()) progress = runCatching { marker.readText() }.getOrDefault("")
+        LogRing.add("probe", "probe finished done=$done rc=${result[0]} file=${progress.trim().replace("\n", "|")}")
+
+        val modelOk = progress.contains("model_ok") || progress.contains("proj_ok") || progress.contains("done")
+        val projOk = progress.contains("proj_ok") || progress.contains("done")
+        return ProbeResult(gpuOk = done && modelOk, projectorOk = projOk, detail = progress.trim())
     }
 
     /** Load a library entry: local gguf (+ auto mmproj) or a cloud model. */
@@ -290,21 +301,47 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             var gpu = resolveGpu()
             if (gpu <= 0 && _state.value.gpuAuto && cfg.gpuLayers > 0) gpu = cfg.gpuLayers
 
-            // Gate GPU behind a one-time isolated verification: the UI process is
-            // never the first to attempt a crash-capable Vulkan load.
-            if (gpu > 0 && !prefs.getBoolean(KEY_GPU_VERIFIED, false)) {
-                _state.update { it.copy(status = "Verifying GPU (isolated)…") }
-                if (probeGpu(path, preset0.contextSize, cfg.threads, gpu)) {
-                    prefs.edit().putBoolean(KEY_GPU_VERIFIED, true).apply()
-                } else {
-                    Log.w(TAG, "GPU verification failed — staying on CPU")
-                    prefs.edit().putInt(KEY_GPU_LAYERS, 0).putBoolean(KEY_GPU_AUTO, false).apply()
-                    _state.update { it.copy(gpuAuto = false, gpuLayers = 0) }
-                    gpu = 0
+            // Resolve the projector pairing up front so the isolated probe can
+            // verify model+projector together: the mmproj native path has never
+            // been proven on this device class, and a fault there used to kill
+            // the UI process right after "model loaded".
+            val ov = projectorOverrides()[path]
+            var projPath = if (ov != null) ov.takeIf { it.isNotBlank() } else entry.projector
+
+            val gpuVerified = prefs.getBoolean(KEY_GPU_VERIFIED, false)
+            val projVerified = prefs.getStringSet(KEY_PROJ_VERIFIED, emptySet()) ?: emptySet()
+            val projectorVerified = projPath == null || projVerified.contains(projPath)
+            val needProbe = (gpu > 0 && !gpuVerified) || !projectorVerified
+
+            if (needProbe) {
+                _state.update { it.copy(status = "Verifying hardware (isolated)…") }
+                val pr = probeNative(path, projPath, preset0.contextSize, cfg.threads, gpu)
+
+                if (gpu > 0) {
+                    if (pr.gpuOk) {
+                        if (!gpuVerified) {
+                            prefs.edit().putBoolean(KEY_GPU_VERIFIED, true).apply()
+                            LogRing.add("load", "GPU verified — offloading $gpu layers")
+                        }
+                    } else {
+                        LogRing.add("load", "GPU verification failed — CPU mode")
+                        prefs.edit().putInt(KEY_GPU_LAYERS, 0).putBoolean(KEY_GPU_AUTO, false)
+                            .putBoolean(KEY_GPU_VERIFIED, false).apply()
+                        _state.update { it.copy(gpuAuto = false, gpuLayers = 0) }
+                        gpu = 0
+                    }
+                }
+                if (projPath != null && !projectorVerified) {
+                    if (pr.projectorOk) {
+                        prefs.edit().putStringSet(KEY_PROJ_VERIFIED, projVerified + projPath).apply()
+                    } else {
+                        LogRing.add("load", "projector unsafe here — running text-only")
+                        projPath = null
+                    }
                 }
             }
 
-            Log.i(TAG, "loadModel path=$path ctx=${preset0.contextSize} threads=${cfg.threads} ngl=$gpu")
+            LogRing.add("load", "ctx=${preset0.contextSize} threads=${cfg.threads} ngl=$gpu proj=${projPath != null}")
 
             // Mark the attempt in-flight: if the process dies here, init() will
             // detect this flag on next launch and disable GPU offload.
@@ -343,14 +380,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val preset = PresetEngine.refine(preset0)
             val info = PresetEngine.describeModel()
 
-            val ov = projectorOverrides()[path]
-            val projPath = if (ov != null) ov.takeIf { it.isNotBlank() } else entry.projector
             var projectorOk = false
             projPath?.let { p ->
                 projectorOk = runCatching { LlamaBridge.loadProjector(p, cfg.threads) }.getOrDefault(-1) == 0
+                if (!projectorOk) LogRing.add("load", "projector load failed after verification")
             }
             val caps = ModelCapabilities.ofLoadedModel(reasoning = preset.reasoning)
             val backend = if (gpu > 0) "GPUx$gpu" else "CPU"
+            LogRing.add("load", "loaded ${preset.family} ctx=${LlamaBridge.contextSize()} $backend proj=$projectorOk")
 
             AutoTuner.record(getApplication(), path, AutoTuner.Config(cfg.threads, gpu))
 
@@ -656,6 +693,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_GPU_AUTO = "gpu_auto"
         private const val KEY_GPU_ATTEMPT = "gpu_attempt_inflight"
         private const val KEY_GPU_VERIFIED = "gpu_verified"
+        private const val KEY_PROJ_VERIFIED = "projector_verified"
         private const val KEY_KV_QUANT = "kv_quant"
         private const val KEY_LAST_MODEL = "last_model_path"
         private const val KEY_CURRENT = "current_chat"

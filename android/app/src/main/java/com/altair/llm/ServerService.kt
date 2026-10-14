@@ -34,6 +34,7 @@ class ServerService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 ServerState.set(false, 0)
+                LogRing.add("server", "stopped")
                 return START_NOT_STICKY
             }
             else -> {
@@ -51,6 +52,7 @@ class ServerService : Service() {
                 ).apply { isDaemon = true }.start()
                 val ok = LocalServer.start(port)
                 ServerState.set(ok, if (ok) port else 0)
+                LogRing.add("server", "start bindAll=${LocalServer.bindAll} port=$port ok=$ok")
                 // mDNS: let LAN clients reach us by name (e.g. altair-local.local).
                 if (ok && LocalServer.bindAll) {
                     val host = getSharedPreferences(PREFS, MODE_PRIVATE)

@@ -65,7 +65,7 @@ object LlamaBridge {
 
     fun systemInfo(): String = nativeSystemInfo()
 
-    /** Install fatal-signal handlers (probe process only — see GpuProbeService). */
+    /** Install fatal-signal handlers (probe process only — see NativeProbeService). */
     fun installCrashGuard() = nativeInstallCrashGuard()
 
     /** True when a GPU backend (Vulkan) is registered for layer offload. */

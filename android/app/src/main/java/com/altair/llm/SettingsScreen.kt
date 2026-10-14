@@ -34,7 +34,7 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
     var serverOn by remember { mutableStateOf(ServerState.running) }
     var portText by remember { mutableStateOf(state.serverPort.toString()) }
     val prefs = remember { context.getSharedPreferences("altair_llm", Context.MODE_PRIVATE) }
-    var lanOn by remember { mutableStateOf(prefs.getBoolean(KEY_LAN, false)) }
+    var lanOn by remember { mutableStateOf(prefs.getBoolean(KEY_LAN, true)) }
     var hostText by remember {
         mutableStateOf(prefs.getString(KEY_MDNS_HOST, MdnsResponder.DEFAULT_HOST) ?: MdnsResponder.DEFAULT_HOST)
     }
@@ -187,6 +187,35 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
 
             item { SectionHeader("About") }
             item { SettingRow("Altair", "0.1.0 - local llama.cpp on-device", null) }
+
+            item { SectionHeader("Diagnostics") }
+            item {
+                val log = remember { mutableStateOf(LogRing.dump()) }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Load / probe / server log (tap Copy, then paste it in chat)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("altair-log", LogRing.dump()))
+                            android.widget.Toast.makeText(context, "Log copied", android.widget.Toast.LENGTH_SHORT).show()
+                        }) { Text("Copy") }
+                        TextButton(onClick = { LogRing.clear(); log.value = "" }) { Text("Clear") }
+                    }
+                    Text(
+                        log.value.ifBlank { "(no events yet — load a model)" },
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp)
+                            .padding(top = 6.dp)
+                    )
+                }
+            }
         }
     }
 }
