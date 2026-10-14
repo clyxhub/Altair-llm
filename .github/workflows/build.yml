@@ -82,6 +82,7 @@ jobs:
           cmake -S /tmp/Vulkan-Headers -B /tmp/vh-build -DCMAKE_INSTALL_PREFIX=/tmp/vh-install > /dev/null
           cmake --install /tmp/vh-build > /dev/null
           cp -r /tmp/vh-install/include/vulkan "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/"
+          cp -r /tmp/vh-install/include/vk_video "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/"
           ls "$NDK_DIR/sysroot/usr/include/vulkan" | head -5
           cmake -B build-android \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
