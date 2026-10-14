@@ -297,6 +297,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val preset0 = PresetEngine.detect(entry.name)
             val gpuAvailable = LlamaBridge.supportsGpu()
             val cfg = AutoTuner.recommend(getApplication(), path, gpuAvailable)
+
+            // Memory-aware context: an 8K f16 KV cache + a 1.3 GB model + a
+            // 365 MB projector is what gets the process killed (LMK) right after
+            // load on a 6 GB phone — which looks exactly like a crash.
+            val prof = DeviceFit.profile(getApplication(), gpuAvailable)
+            val modelBytes = runCatching { File(path).length() }.getOrDefault(0L)
+            val projBytes = runCatching { entry.projector?.let { File(it).length() } ?: 0L }.getOrDefault(0L)
+            val ctxSize = DeviceFit.safeContext(preset0.contextSize, modelBytes, projBytes, prof)
+            val gib = 1024.0 * 1024.0 * 1024.0
+            LogRing.add(
+                "mem",
+                "total=%.1fGB avail=%.1fGB model=%.2fGB proj=%.2fGB ctx=%d (preset %d)".format(
+                    prof.totalRamBytes / gib, prof.availRamBytes / gib,
+                    modelBytes / gib, projBytes / gib, ctxSize, preset0.contextSize
+                )
+            )
             // AUTO: prefer the resolved policy; otherwise honour the tuned/manual value.
             var gpu = resolveGpu()
             if (gpu <= 0 && _state.value.gpuAuto && cfg.gpuLayers > 0) gpu = cfg.gpuLayers
@@ -315,7 +331,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             if (needProbe) {
                 _state.update { it.copy(status = "Verifying hardware (isolated)…") }
-                val pr = probeNative(path, projPath, preset0.contextSize, cfg.threads, gpu)
+                val pr = probeNative(path, projPath, ctxSize, cfg.threads, gpu)
 
                 if (gpu > 0) {
                     if (pr.gpuOk) {
@@ -341,7 +357,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            LogRing.add("load", "ctx=${preset0.contextSize} threads=${cfg.threads} ngl=$gpu proj=${projPath != null}")
+            LogRing.add("load", "ctx=${ctxSize} threads=${cfg.threads} ngl=$gpu proj=${projPath != null}")
 
             // Mark the attempt in-flight: if the process dies here, init() will
             // detect this flag on next launch and disable GPU offload.
@@ -350,9 +366,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // memory so long contexts don't OOM the device.
             // Default to f16 (OFF): quantized KV caches are opt-in because some
             // backends/models reject them, and a bad KV cache silently kills output.
-            var kvMode = prefs.getInt(KEY_KV_QUANT, LlamaBridge.KV_OFF)
+            var kvMode = prefs.getInt(KEY_KV_QUANT, LlamaBridge.KV_Q8_0)
             LlamaBridge.setKvQuant(kvMode)
-            var rc = runCatching { LlamaBridge.loadModel(path, preset0.contextSize, cfg.threads, gpu) }.getOrDefault(-99)
+            var rc = runCatching { LlamaBridge.loadModel(path, ctxSize, cfg.threads, gpu) }.getOrDefault(-99)
             if (rc != 0 && gpu > 0) {
                 Log.w(TAG, "GPU load failed rc=$rc — retrying CPU-only")
                 gpu = 0
@@ -360,14 +376,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // holds for this model/driver — re-verify on next attempt.
                 prefs.edit().putBoolean(KEY_GPU_VERIFIED, false).apply()
                 LlamaBridge.setKvQuant(kvMode)
-                rc = runCatching { LlamaBridge.loadModel(path, preset0.contextSize, cfg.threads, 0) }.getOrDefault(-99)
+                rc = runCatching { LlamaBridge.loadModel(path, ctxSize, cfg.threads, 0) }.getOrDefault(-99)
             }
             if (rc != 0 && kvMode != LlamaBridge.KV_OFF) {
                 // Some models reject a quantized KV cache — fall back to f16.
                 Log.w(TAG, "load failed rc=$rc — retrying with f16 KV cache")
                 kvMode = LlamaBridge.KV_OFF
                 LlamaBridge.setKvQuant(kvMode)
-                rc = runCatching { LlamaBridge.loadModel(path, preset0.contextSize, cfg.threads, gpu) }.getOrDefault(-99)
+                rc = runCatching { LlamaBridge.loadModel(path, ctxSize, cfg.threads, gpu) }.getOrDefault(-99)
             }
             if (rc != 0) {
                 Log.e(TAG, "load failed rc=$rc")
@@ -377,7 +393,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             prefs.edit().putBoolean(KEY_GPU_ATTEMPT, false).apply()
 
-            val preset = PresetEngine.refine(preset0)
+            val preset = PresetEngine.refine(preset0).copy(contextSize = ctxSize)
             val info = PresetEngine.describeModel()
 
             var projectorOk = false

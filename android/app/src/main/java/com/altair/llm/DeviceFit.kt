@@ -54,11 +54,36 @@ object DeviceFit {
     }
 
     /**
+     * Largest context we can hand to llama.cpp without inviting the OS
+     * low-memory killer. Weights are mmap'd, but the KV cache is real RAM:
+     * an 8K f16 cache on a 6 GB phone plus a ~1.3 GB model + projector is
+     * routinely killed right after load (looks like a "crash").
+     *
+     * Advisory but applied automatically; the user can still raise it in Settings.
+     */
+    fun safeContext(requested: Int, modelBytes: Long, projectorBytes: Long, p: Profile): Int {
+        val gib = 1024.0 * 1024.0 * 1024.0
+        val gb = p.totalRamBytes / gib
+        val capByRam = when {
+            gb >= 12.0 -> 8192
+            gb >= 8.0 -> 8192
+            gb >= 6.0 -> 4096
+            gb >= 4.0 -> 2048
+            else -> 1024
+        }
+        val footprintGb = (modelBytes + projectorBytes.coerceAtLeast(0L)) / gib
+        var cap = capByRam
+        if (footprintGb >= 2.0 && cap > 4096) cap = 4096
+        if (footprintGb >= 3.0 && cap > 2048) cap = 2048
+        if (footprintGb >= 4.0 && cap > 1024) cap = 1024
+        return minOf(requested, cap).coerceAtLeast(512)
+    }
+
+    /**
      * Grade a prospective download. [modelBytes] should include the mmproj size
      * when the user is going to pull that as well.
      */
-    fun evaluate(modelBytes: Long, p: Profile): Fit {
-        if (p.totalRamBytes <= 0L || modelBytes <= 0L) return Fit.YELLOW
+    fun evaluate(modelBytes: Long, p: Profile): Fit {        if (p.totalRamBytes <= 0L || modelBytes <= 0L) return Fit.YELLOW
         val ratio = modelBytes.toDouble() / p.totalRamBytes.toDouble()
         var fit = when {
             ratio <= COMFORTABLE -> Fit.GREEN
