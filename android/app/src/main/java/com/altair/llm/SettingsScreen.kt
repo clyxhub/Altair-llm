@@ -205,6 +205,80 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             item { SettingRow("Enable Weight Repacking", "Enabled by default", null) }
             item { SectionHeader("About") }
             item { SettingRow("Altair", "0.1.0 - local llama.cpp on-device", null) }
+            item { SectionHeader("Tools & Plugins") }
+            item {
+                var toolsOn by remember { mutableStateOf(prefs.getBoolean("tools_enabled", true)) }
+                SwitchRow(
+                    "Enable tools",
+                    "Let the agent call tools, MCP servers and plugins",
+                    toolsOn
+                ) { on ->
+                    prefs.edit().putBoolean("tools_enabled", on).apply()
+                    toolsOn = on
+                }
+            }
+            item {
+                var version by remember { mutableStateOf(0) }
+                val tools = remember(version) {
+                    runCatching { ToolRegistry.all(context) }.getOrDefault(emptyList())
+                }
+                Column(Modifier.fillMaxWidth()) {
+                    tools.forEach { t ->
+                        val off = ToolRegistry.disabled(context).contains(t.spec.name)
+                        SettingRow(t.spec.name, t.spec.source) {
+                            Switch(
+                                checked = !off,
+                                onCheckedChange = { on ->
+                                    ToolRegistry.setEnabled(context, t.spec.name, on)
+                                    ToolRegistry.prefetch(context)
+                                    version++
+                                }
+                            )
+                        }
+                    }
+                    if (tools.isEmpty()) {
+                        Text(
+                            "No tools available",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+            item {
+                var sName by remember { mutableStateOf("") }
+                var sUrl by remember { mutableStateOf("") }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Text("Add MCP server / plugin", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "HTTP JSON-RPC endpoint (Claude Code / Operit-style)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = sName, onValueChange = { sName = it },
+                        label = { Text("Name") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = sUrl, onValueChange = { sUrl = it },
+                        label = { Text("URL") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = {
+                        if (sName.isNotBlank() && sUrl.isNotBlank()) {
+                            McpClient.addServer(context, sName, sUrl)
+                            ToolRegistry.prefetch(context)
+                            sName = ""; sUrl = ""
+                        }
+                    }) { Text("Add server") }
+                }
+            }
+
             item { SectionHeader("Memory") }
             item {
                 var memCount by remember { mutableStateOf(MemoryStore.count(context)) }

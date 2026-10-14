@@ -101,6 +101,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 Log.i(TAG, "system: " + LlamaBridge.systemInfo())
             }
             refreshModels()
+            ToolRegistry.prefetch(getApplication())
             // Quick win: remember the last-used model and auto-load it.
             val last = prefs.getString(KEY_LAST_MODEL, null)
             if (last != null) {
@@ -476,6 +477,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val roles = mutableListOf<String>()
         val contents = mutableListOf<String>()
         if (SYSTEM_PROMPT.isNotBlank()) { roles += "system"; contents += SYSTEM_PROMPT }
+        // Phase 4: advertise available tools + the (text) call protocol so even
+        // small local models can drive them.
+        if (prefs.getBoolean(KEY_TOOLS_ENABLED, true)) {
+            roles += "system"
+            contents += (
+                "You can use tools. Available tools:\n" + ToolRegistry.cachedCatalogue() +
+                    "\nTo call a tool, reply with exactly one line:\n" +
+                    "TOOL: <tool_name> {\"arg\":\"value\"}\n" +
+                    "After the result is provided, continue answering the user."
+                )
+        }
         if (memories.isNotEmpty()) {
             roles += "system"
             contents += ("Relevant long-term memory:\n" + memories.joinToString("\n") { "- $it" })
@@ -562,6 +574,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             LlamaBridge.generate(prompt, MAX_TOKENS, preset.temperature, preset.topP) { t ->
                                 sb.append(t); _state.update { it.copy(streaming = display(sb.toString())) }
                             }
+                        }
+                    }
+
+                    // Phase 4: agentic tool loop — if the reply requests a tool,
+                    // run it and feed the result back, at most twice per turn
+                    // (phone-friendly budget; the token budgeter still applies).
+                    if (prefs.getBoolean(KEY_TOOLS_ENABLED, true)) {
+                        var rounds = 0
+                        var transcript = prompt + sb.toString()
+                        while (rounds < 2) {
+                            val directive = runCatching { ToolRegistry.takeDirective(getApplication(), sb.toString()) }.getOrNull() ?: break
+                            val (tool, args) = directive
+                            val result = runCatching { tool.run(args) }.getOrElse { "tool error: ${it.message}" }
+                            LogRing.add("tool", "${tool.spec.name} -> ${result.take(140)}")
+                            sb.clear()
+                            val next = transcript + "\nTOOL_RESULT (" + tool.spec.name + "): " + result + "\n"
+                            runCatching {
+                                LlamaBridge.generate(next, MAX_TOKENS, preset.temperature, preset.topP) { t ->
+                                    sb.append(t); _state.update { it.copy(streaming = display(sb.toString())) }
+                                }
+                            }
+                            transcript = next
+                            rounds++
                         }
                     }
                 }
@@ -761,6 +796,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_GPU_VERIFIED = "gpu_verified"
         private const val KEY_PROJ_VERIFIED = "projector_verified"
         private const val KEY_KV_QUANT = "kv_quant"
+        private const val KEY_TOOLS_ENABLED = "tools_enabled"
         private const val KEY_LAST_MODEL = "last_model_path"
         private const val KEY_CURRENT = "current_chat"
         private const val KEY_THINKING = "thinking"
