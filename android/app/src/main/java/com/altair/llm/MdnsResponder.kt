@@ -26,7 +26,7 @@ import java.util.Collections
  */
 object MdnsResponder {
 
-    private const val TAG = "HermesLlama"
+    private const val TAG = "Altair"
     private const val MDNS_ADDR = "224.0.0.251"
     private const val MDNS_PORT = 5353
     private const val SVC_TYPE = "_http._tcp.local"

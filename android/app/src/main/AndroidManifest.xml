@@ -42,6 +42,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Isolated GPU verification: a Vulkan crash here cannot kill the UI. -->
+        <service
+            android:name=".GpuProbeService"
+            android:exported="false"
+            android:process=":gpuprobe" />
+
         <!-- 14th requirement: share/open/test generated artifacts. Grants other
              apps read access to our generated/* files via content URIs. -->
         <provider

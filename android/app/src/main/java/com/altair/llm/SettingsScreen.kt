@@ -53,9 +53,9 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             item { SectionHeader("Model Initialization Settings") }
             item {
                 SwitchRow(
-                    "GPU acceleration (auto)",
-                    if (state.gpuAvailable) "Offload every layer the GPU can hold"
-                    else "No GPU backend detected — running on CPU",
+                    "GPU acceleration (experimental)",
+                    if (!state.gpuAvailable) "No GPU backend detected — running on CPU"
+                    else "Verified in isolation first; falls back to CPU if the driver is unsafe",
                     state.gpuAuto
                 ) { vm.setGpuAuto(it) }
             }

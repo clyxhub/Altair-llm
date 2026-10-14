@@ -38,9 +38,8 @@ internal fun importGguf(context: android.content.Context, uri: Uri): String? = r
     }.getOrNull() ?: uri.lastPathSegment ?: "model.gguf"
     if (!name.endsWith(".gguf", true)) name += ".gguf"
     val out = File(dir, name)
-    context.contentResolver.openInputStream(uri)!!.use { input ->
-        out.outputStream().use { output -> input.copyTo(output) }
-    }
+    val input = context.contentResolver.openInputStream(uri) ?: return@runCatching null
+    input.use { i -> out.outputStream().use { output -> i.copyTo(output) } }
     out.absolutePath
 }.getOrNull()
 

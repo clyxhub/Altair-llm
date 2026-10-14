@@ -26,6 +26,7 @@ object LlamaBridge {
 
     private external fun nativeInit(): Int
     private external fun nativeSystemInfo(): String
+    private external fun nativeInstallCrashGuard()
     private external fun nativeSupportsGpu(): Boolean
     private external fun nativeLoadModel(
         path: String, nCtx: Int, nThreads: Int, nGpuLayers: Int
@@ -63,6 +64,9 @@ object LlamaBridge {
     fun init(): Int = nativeInit()
 
     fun systemInfo(): String = nativeSystemInfo()
+
+    /** Install fatal-signal handlers (probe process only — see GpuProbeService). */
+    fun installCrashGuard() = nativeInstallCrashGuard()
 
     /** True when a GPU backend (Vulkan) is registered for layer offload. */
     fun supportsGpu(): Boolean = nativeSupportsGpu()

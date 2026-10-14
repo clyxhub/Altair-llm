@@ -14,6 +14,9 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
+#include <csignal>
+#include <cstring>
+#include <unistd.h>
 
 #include "llama.h"
 #include "common.h"
@@ -125,6 +128,37 @@ Java_com_altair_llm_LlamaBridge_nativeInit(JNIEnv*, jobject) {
 JNIEXPORT jstring JNICALL
 Java_com_altair_llm_LlamaBridge_nativeSystemInfo(JNIEnv* env, jobject) {
     return env->NewStringUTF(llama_print_system_info());
+}
+
+/**
+ * Install fatal-signal handlers for the *probe* process only.
+ *
+ * A Vulkan driver fault during GPU model load raises SIGSEGV/SIGABRT, which
+ * would otherwise show the system "Altair has stopped" dialog. In the isolated
+ * :gpuprobe process we instead log a marker and _exit() cleanly so the UI
+ * process is never affected and the OS shows no crash dialog. Handlers use
+ * async-signal-safe calls only.
+ */
+static void altair_fatal_handler(int sig) {
+    const char* msg = "Altair: GPU probe hit a fatal signal — GPU marked unsafe\n";
+    ssize_t ignored = write(STDERR_FILENO, msg, strlen(msg));
+    (void) ignored;
+    _exit(70 + (sig & 0x1f));
+}
+
+JNIEXPORT void JNICALL
+Java_com_altair_llm_LlamaBridge_nativeInstallCrashGuard(JNIEnv*, jobject) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = altair_fatal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESETHAND;
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
+    sigaction(SIGBUS,  &sa, nullptr);
+    sigaction(SIGILL,  &sa, nullptr);
+    sigaction(SIGFPE,  &sa, nullptr);
+    LOGI("Altair: crash guard installed (probe process)");
 }
 
 /** True when a GPU backend (Vulkan) is registered and can offload layers. */

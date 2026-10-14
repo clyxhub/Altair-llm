@@ -1,7 +1,17 @@
 package com.altair.llm
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.Bundle
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.Message
+import android.os.Messenger
+import android.os.RemoteException
 import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
@@ -14,6 +24,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Everything the UI renders. */
 data class UiState(
@@ -29,7 +41,7 @@ data class UiState(
     val preset: PresetEngine.Preset? = null,
     val capabilities: ModelCapabilities = ModelCapabilities(),
     val gpuLayers: Int = 0,
-    val gpuAuto: Boolean = true,
+    val gpuAuto: Boolean = false,
     val gpuAvailable: Boolean = false,
     val threads: Int = 4,
     val contextSize: Int = 4096,
@@ -57,18 +69,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (chats.isEmpty()) ChatStore.newChat(chats)
         if (currentId == null || chats.none { it.id == currentId }) currentId = chats.first().id
 
-        // GPU policy: AUTO by default (offload every layer the backend can hold).
-        // Crash recovery: a GPU load that never completed means the process was
-        // killed mid-offload (Vulkan driver crash). Force CPU so the app cannot
-        // crash-loop on a bad GPU configuration.
-        var gpuPref = prefs.getInt(KEY_GPU_LAYERS, GPU_LAYERS_ALL)
-        var autoPref = prefs.getBoolean(KEY_GPU_AUTO, true)
+        // GPU policy: CPU by default. GPU (Vulkan) is opt-in and, before it is
+        // ever used in the UI process, it must pass an isolated :gpuprobe load
+        // (see probeGpu) — so a flaky driver can never crash the app on install.
+        var gpuPref = prefs.getInt(KEY_GPU_LAYERS, 0)
+        var autoPref = prefs.getBoolean(KEY_GPU_AUTO, false)
         if (prefs.getBoolean(KEY_GPU_ATTEMPT, false)) {
             Log.w(TAG, "previous GPU load did not complete — disabling GPU offload (CPU mode)")
             gpuPref = 0
             autoPref = false
             prefs.edit().putInt(KEY_GPU_LAYERS, 0).putBoolean(KEY_GPU_AUTO, false)
-                .putBoolean(KEY_GPU_ATTEMPT, false).apply()
+                .putBoolean(KEY_GPU_ATTEMPT, false).putBoolean(KEY_GPU_VERIFIED, false).apply()
         }
         _state.value = UiState(
             chats = ordered(),
@@ -182,6 +193,76 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return if (s.gpuAuto) (if (LlamaBridge.supportsGpu()) GPU_LAYERS_ALL else 0) else s.gpuLayers
     }
 
+    /**
+     * Verify GPU offload in the isolated :gpuprobe process. Returns true only if
+     * that process loaded the model with GPU successfully. A driver crash there
+     * is contained (it fires onServiceDisconnected / returns a clean exit) and
+     * never reaches the UI process. Blocking; call from Dispatchers.IO.
+     */
+    private fun probeGpu(path: String, ctx: Int, threads: Int, ngl: Int): Boolean {
+        if (!LlamaBridge.supportsGpu()) return false
+        val app = getApplication<Application>()
+        val latch = CountDownLatch(1)
+        val result = intArrayOf(-1)
+
+        val clientMessenger = Messenger(
+            Handler(Looper.getMainLooper()) { msg ->
+                if (msg.what == GpuProbeService.MSG_RESULT) {
+                    result[0] = msg.arg1
+                    latch.countDown()
+                }
+                true
+            }
+        )
+
+        val conn = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                if (service == null) {
+                    result[0] = -101
+                    latch.countDown()
+                    return
+                }
+                val b = Bundle().apply {
+                    putString("path", path)
+                    putInt("ctx", ctx)
+                    putInt("threads", threads)
+                    putInt("ngl", ngl)
+                }
+                val m = Message.obtain(null, GpuProbeService.MSG_LOAD)
+                m.data = b
+                m.replyTo = clientMessenger
+                try {
+                    Messenger(service).send(m)
+                } catch (e: RemoteException) {
+                    Log.w(TAG, "gpu probe send failed", e)
+                    result[0] = -101
+                    latch.countDown()
+                }
+            }
+
+            override fun onServiceDisconnected(name: ComponentName?) {
+                // Probe process died (native crash contained there).
+                Log.w(TAG, "gpu probe process died — GPU unsafe")
+                result[0] = -100
+                latch.countDown()
+            }
+        }
+
+        val bound = try {
+            app.bindService(Intent(app, GpuProbeService::class.java), conn, Context.BIND_AUTO_CREATE)
+        } catch (e: Exception) {
+            Log.w(TAG, "bindService to gpu probe failed", e)
+            false
+        }
+        if (!bound) return false
+
+        val done = latch.await(180, TimeUnit.SECONDS)
+        runCatching { app.unbindService(conn) }
+        val ok = done && result[0] == 0
+        Log.i(TAG, "gpu probe result: done=$done rc=${result[0]} ok=$ok")
+        return ok
+    }
+
     /** Load a library entry: local gguf (+ auto mmproj) or a cloud model. */
     fun loadEntry(entry: ModelRepository.Entry) {
         if (!entry.isLocal) {
@@ -208,6 +289,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // AUTO: prefer the resolved policy; otherwise honour the tuned/manual value.
             var gpu = resolveGpu()
             if (gpu <= 0 && _state.value.gpuAuto && cfg.gpuLayers > 0) gpu = cfg.gpuLayers
+
+            // Gate GPU behind a one-time isolated verification: the UI process is
+            // never the first to attempt a crash-capable Vulkan load.
+            if (gpu > 0 && !prefs.getBoolean(KEY_GPU_VERIFIED, false)) {
+                _state.update { it.copy(status = "Verifying GPU (isolated)…") }
+                if (probeGpu(path, preset0.contextSize, cfg.threads, gpu)) {
+                    prefs.edit().putBoolean(KEY_GPU_VERIFIED, true).apply()
+                } else {
+                    Log.w(TAG, "GPU verification failed — staying on CPU")
+                    prefs.edit().putInt(KEY_GPU_LAYERS, 0).putBoolean(KEY_GPU_AUTO, false).apply()
+                    _state.update { it.copy(gpuAuto = false, gpuLayers = 0) }
+                    gpu = 0
+                }
+            }
+
             Log.i(TAG, "loadModel path=$path ctx=${preset0.contextSize} threads=${cfg.threads} ngl=$gpu")
 
             // Mark the attempt in-flight: if the process dies here, init() will
@@ -223,6 +319,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             if (rc != 0 && gpu > 0) {
                 Log.w(TAG, "GPU load failed rc=$rc — retrying CPU-only")
                 gpu = 0
+                // A non-fatal GPU failure means the verified assumption no longer
+                // holds for this model/driver — re-verify on next attempt.
+                prefs.edit().putBoolean(KEY_GPU_VERIFIED, false).apply()
                 LlamaBridge.setKvQuant(kvMode)
                 rc = runCatching { LlamaBridge.loadModel(path, preset0.contextSize, cfg.threads, 0) }.getOrDefault(-99)
             }
@@ -524,13 +623,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** Manual GPU layer count (also switches AUTO off). */
     fun setGpuLayers(layers: Int) {
         val v = layers.coerceIn(0, 200)
-        prefs.edit().putInt(KEY_GPU_LAYERS, v).putBoolean(KEY_GPU_AUTO, false).apply()
+        // Any change to the GPU policy invalidates the prior verification so the
+        // next load re-runs the isolated probe.
+        prefs.edit().putInt(KEY_GPU_LAYERS, v).putBoolean(KEY_GPU_AUTO, false)
+            .putBoolean(KEY_GPU_VERIFIED, false).apply()
         _state.update { it.copy(gpuLayers = v, gpuAuto = false) }
     }
 
     /** AUTO = offload all layers when a GPU backend is present, else CPU. */
     fun setGpuAuto(on: Boolean) {
-        prefs.edit().putBoolean(KEY_GPU_AUTO, on).apply()
+        prefs.edit().putBoolean(KEY_GPU_AUTO, on).putBoolean(KEY_GPU_VERIFIED, false).apply()
         _state.update { it.copy(gpuAuto = on) }
     }
 
@@ -542,7 +644,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
-        const val TAG = "HermesLlama"
+        const val TAG = "Altair"
         private const val SYSTEM_PROMPT = "You are a helpful assistant running locally on the user's phone."
         private const val MAX_TOKENS = 512
         const val GPU_LAYERS_ALL = 99
@@ -553,6 +655,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_GPU_LAYERS = "gpu_layers"
         private const val KEY_GPU_AUTO = "gpu_auto"
         private const val KEY_GPU_ATTEMPT = "gpu_attempt_inflight"
+        private const val KEY_GPU_VERIFIED = "gpu_verified"
         private const val KEY_KV_QUANT = "kv_quant"
         private const val KEY_LAST_MODEL = "last_model_path"
         private const val KEY_CURRENT = "current_chat"

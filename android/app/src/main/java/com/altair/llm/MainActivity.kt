@@ -498,8 +498,7 @@ private fun copyUriToTemp(context: Context, uri: Uri, isAudio: Boolean = false, 
     val ext = if (isAudio) "wav" else (name.substringAfterLast('.', "jpg").take(8))
     val base = if (isAudio) "attach_${System.currentTimeMillis()}" else name.substringBeforeLast('.', name)
     val f = File(context.cacheDir, "$base.$ext")
-    context.contentResolver.openInputStream(uri)!!.use { input ->
-        f.outputStream().use { output -> input.copyTo(output) }
-    }
+    val input = context.contentResolver.openInputStream(uri) ?: return@runCatching null
+    input.use { i -> f.outputStream().use { output -> i.copyTo(output) } }
     f.absolutePath
 }.getOrNull()
