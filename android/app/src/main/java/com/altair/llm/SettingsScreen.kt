@@ -140,7 +140,8 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             // Thinking / web-search live in the chat composer (single source of
             // truth) — deliberately NOT duplicated here.
 
-            item { SectionHeader("Local Server") }            item {
+            item { SectionHeader("Local Server") }
+            item {
                 SwitchRow(
                     "OpenAI-compatible server",
                     "Serve the loaded model to other apps",
