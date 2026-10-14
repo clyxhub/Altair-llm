@@ -1,122 +1,505 @@
 package com.altair.llm
 
-import android.Manifest
-import android.app.Activity
+import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
-import android.os.Bundle
 import android.provider.OpenableColumns
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import org.json.JSONArray
-import org.json.JSONObject
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Phase 1 shell: renders the bundled web UI, exposes the AndroidBridge for
- * model management (HuggingFace downloads, SAF import, local llama-server control).
+ * v5: sections reachable from the navigation drawer.
+ *
+ * Placement + style mirror PocketPal AI (full-width icon+label drawer items,
+ * Chat first, Models/Settings/App Info present). The extra entries — Chats,
+ * HuggingFace, Providers — are this app's differentiators.
  */
-class MainActivity : Activity() {
+enum class Section(val label: String, val icon: ImageVector) {
+    CHAT("Chat", Icons.Default.Chat),
+    CHATS("Chats", Icons.Default.History),
+    MODELS("Models", Icons.Default.Storage),
+    HUGGINGFACE("HuggingFace", Icons.Default.CloudDownload),
+    PROVIDERS("Providers", Icons.Default.Key),
+    SETTINGS("Settings", Icons.Default.Settings),
+    INFO("App Info", Icons.Default.Info)
+}
 
-    private lateinit var web: WebView
-
+class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val nativeVersion = AltairJni.version()
-        android.util.Log.i("Altair", "native bridge version: $nativeVersion")
-
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-        }
-
-        web = WebView(this)
-        web.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            allowFileAccess = true
-            // Samsung One UI ships font scale >1.0 which WebView applies as textZoom,
-            // inflating all text and pushing content off-screen. Lock to 100%.
-            textZoom = 100
-            // the UI (file://) talks to the local engine over http://127.0.0.1
-            @Suppress("DEPRECATION")
-            allowUniversalAccessFromFileURLs = true
-        }
-        web.webViewClient = WebViewClient()
-        web.addJavascriptInterface(Bridge(this), "AndroidBridge")
-        setContentView(web)
-        web.loadUrl("file:///android_asset/www/index.html")
+        setContent { HermesTheme { AppRoot() } }
     }
+}
 
-    /** SAF picker — import GGUF model / mmproj files already on the device. */
-    fun startModelImport() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        startActivityForResult(intent, REQUEST_IMPORT)
-    }
+/** Compose Material3 theme that follows the system light/dark setting. */
+@Composable
+fun HermesTheme(content: @Composable () -> Unit) {
+    val dark = isSystemInDarkTheme()
+    MaterialTheme(
+        colorScheme = if (dark) darkColorScheme() else lightColorScheme(),
+        content = content
+    )
+}
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_IMPORT) return
-        val results = JSONArray()
+/** Drawer host + section switch. One shared drawer, exactly like PocketPal. */
+@Composable
+fun AppRoot(vm: ChatViewModel = viewModel()) {
+    var section by remember { mutableStateOf(Section.CHAT) }
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val open: () -> Unit = { scope.launch { drawerState.open() } }
 
-        if (resultCode == RESULT_OK && data != null) {
-            val uris = mutableListOf<Uri>()
-            data.clipData?.let { cd ->
-                for (i in 0 until cd.itemCount) uris.add(cd.getItemAt(i).uri)
-            }
-            if (uris.isEmpty()) data.data?.let { uris.add(it) }
-
-            for (uri in uris) {
-                try {
-                    val name = queryDisplayName(uri)
-                        ?: "imported-${System.currentTimeMillis().toString(36)}.gguf"
-                    val dest = File(EngineManager.modelsDir(), name)
-                    contentResolver.openInputStream(uri)?.use { input ->
-                        dest.outputStream().use { output -> input.copyTo(output) }
-                    } ?: throw IllegalStateException("cannot open $uri")
-                    results.put(
-                        JSONObject()
-                            .put("ok", true)
-                            .put("name", name)
-                            .put("size", dest.length())
-                    )
-                    android.util.Log.i("Altair", "imported $name (${dest.length()} bytes)")
-                } catch (e: Exception) {
-                    android.util.Log.e("Altair", "import failed: ${e.message}")
-                    results.put(
-                        JSONObject().put("ok", false).put("error", e.message ?: "import failed")
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Altair",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                )
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                Section.values().forEach { s ->
+                    NavigationDrawerItem(
+                        icon = { Icon(s.icon, null) },
+                        label = { Text(s.label) },
+                        selected = s == section,
+                        onClick = {
+                            section = s
+                            scope.launch { drawerState.close() }
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                     )
                 }
             }
         }
-
-        val js = "window.__altair && window.__altair.onImportDone(" + results.toString() + ")"
-        runOnUiThread {
-            if (this::web.isInitialized) web.evaluateJavascript(js, null)
+    ) {
+        when (section) {
+            Section.CHAT -> ChatScreen(vm, onMenu = open, onOpenModels = { section = Section.MODELS })
+            Section.CHATS -> ChatsScreen(vm, onMenu = open, onOpen = { section = Section.CHAT })
+            Section.MODELS -> ModelsScreen(
+                vm, onMenu = open,
+                onFindMore = { section = Section.HUGGINGFACE },
+                onOpenProviders = { section = Section.PROVIDERS }
+            )
+            Section.HUGGINGFACE -> HuggingFaceScreen(vm, onMenu = open)
+            Section.PROVIDERS -> ProvidersScreen(vm, onMenu = open)
+            Section.SETTINGS -> SettingsScreen(vm, onMenu = open)
+            Section.INFO -> InfoScreen(onMenu = open)
         }
-    }
-
-    private fun queryDisplayName(uri: Uri): String? {
-        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-            if (c.moveToFirst()) return c.getString(0)
-        }
-        return null
-    }
-
-    override fun onBackPressed() {
-        if (this::web.isInitialized && web.canGoBack()) web.goBack() else super.onBackPressed()
-    }
-
-    companion object {
-        private const val REQUEST_IMPORT = 4201
     }
 }
+
+// --- chat -------------------------------------------------------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) {
+    val state by vm.state.collectAsState()
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var input by remember { mutableStateOf("") }
+    var editIndex by remember { mutableStateOf<Int?>(null) }
+    var editText by remember { mutableStateOf("") }
+    var viewing by remember { mutableStateOf<Artifact?>(null) }
+    val listState = rememberLazyListState()
+    val msgs = state.current?.messages ?: emptyList()
+    val caps = state.capabilities
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) copyUriToTemp(context, uri, isAudio = false)?.let { vm.setAttachment(it, false) }
+    }
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) copyUriToTemp(context, uri, isAudio = true)?.let { vm.setAttachment(it, true) }
+    }
+    // 21st: generic file picker so any document on the phone can be attached;
+    // text files are inlined into the message.
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val f = copyUriToTemp(context, uri, isAudio = false, keepName = true)
+            if (f != null) {
+                vm.setAttachment(f, isAudio = false)
+                input = (input + "\n\n[attached file: " + File(f).name + "]\n" +
+                    runCatching { File(f).readText().take(4000) }.getOrDefault("(binary file)"))
+            }
+        }
+    }
+    val voiceInput = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        VoiceIO.parseStt(res.data)?.let { input = it }
+    }
+
+    LaunchedEffect(msgs.size, state.streaming, state.busy) {
+        val count = msgs.size + if (state.busy) 1 else 0
+        if (count > 0) runCatching { listState.animateScrollToItem(count - 1) }
+    }
+
+    editIndex?.let { idx ->
+        AlertDialog(
+            onDismissRequest = { editIndex = null },
+            title = { Text("Edit & resend") },
+            text = {
+                OutlinedTextField(
+                    value = editText, onValueChange = { editText = it },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.editAndResend(idx, editText); editIndex = null }) { Text("Send") }
+            },
+            dismissButton = { TextButton(onClick = { editIndex = null }) { Text("Cancel") } }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, "Open drawer") }
+                },
+                title = { Text("Chat") },
+                actions = {
+                    IconButton(onClick = { vm.newChat() }) { Icon(Icons.Default.Create, "New chat") }
+                    if (state.busy) {
+                        IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, "Stop") }
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            if (state.currentModelId != null) {
+                Composer(
+                    value = input,
+                    onChange = { input = it },
+                    attachment = state.attachment,
+                    attachmentIsAudio = state.attachmentIsAudio,
+                    showImageAttach = caps.vision,
+                    showAudioAttach = caps.audio,
+                    busy = state.busy,
+                    thinking = state.thinking,
+                    webSearch = state.webSearch,
+                    onToggleThinking = { vm.setThinking(!state.thinking) },
+                    onToggleWebSearch = { vm.setWebSearch(!state.webSearch) },
+                    onAttachImage = { imagePicker.launch("image/*") },
+                    onAttachAudio = { audioPicker.launch("audio/*") },
+                    onAttachFile = { filePicker.launch("*/*") },
+                    onClearAttachment = { vm.clearAttachment() },
+                    onVoice = { voiceInput.launch(VoiceIO.sttIntent()) },
+                    onSend = {
+                        val text = input.trim()
+                        if (text.isNotEmpty() || state.attachment != null) {
+                            vm.send(text, state.attachment)
+                            input = ""
+                        }
+                    }
+                )
+            }
+        }
+    ) { pad ->
+        Box(Modifier.padding(pad).fillMaxSize()) {
+            when {
+                state.currentModelId == null -> EmptyModels(onOpenModels)
+                msgs.isEmpty() && !state.busy -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Start chatting — type below.", style = MaterialTheme.typography.bodyMedium)
+                }
+                else -> LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(msgs) { i, m ->
+                        MessageBubble(
+                            m = m,
+                            onEdit = { editIndex = i; editText = m.content },
+                            onRetry = { vm.retryAt(i) },
+                            onDelete = { vm.deleteMessage(i) },
+                            onCopy = { clipboard.setText(AnnotatedString(m.content)) },
+                            onSpeak = { VoiceIO.init(context); VoiceIO.speak(m.content) },
+                            onOpenArtifact = { a -> vm.materializeArtifact(a); viewing = a }
+                        )
+                    }
+                    if (state.busy) item { TypingBubble(state.streaming) }
+                }
+            }
+        }
+    }
+    viewing?.let { a ->
+        ArtifactViewerDialog(
+            a = a,
+            onDismiss = { viewing = null },
+            onDownload = { vm.downloadArtifact(it) }
+        )
+    }
+}
+
+@Composable
+private fun EmptyModels(onOpenModels: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("No Models Available", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Download a model to start chatting with Altair",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = onOpenModels, modifier = Modifier.fillMaxWidth()) { Text("Download Model") }
+    }
+}
+
+@Composable
+private fun MessageBubble(
+    m: Msg,
+    onEdit: () -> Unit,
+    onRetry: () -> Unit,
+    onDelete: () -> Unit,
+    onCopy: () -> Unit,
+    onSpeak: () -> Unit,
+    onOpenArtifact: (Artifact) -> Unit
+) {
+    val isUser = m.role == "user"
+    var menu by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                color = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.widthIn(max = 300.dp)
+            ) {
+                Text(m.content, modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Message actions") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Copy") },
+                        leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                        onClick = { menu = false; onCopy() }
+                    )
+                    if (isUser) {
+                        DropdownMenuItem(
+                            text = { Text("Edit & resend") },
+                            leadingIcon = { Icon(Icons.Default.Edit, null) },
+                            onClick = { menu = false; onEdit() }
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text("Retry") },
+                            leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                            onClick = { menu = false; onRetry() }
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Read aloud") },
+                        leadingIcon = { Icon(Icons.Default.VolumeUp, null) },
+                        onClick = { menu = false; onSpeak() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        leadingIcon = { Icon(Icons.Default.Delete, null) },
+                        onClick = { menu = false; onDelete() }
+                    )
+                }
+            }
+        }
+        // Generated files (images, clips, music, HTML, …) shown under the bubble.
+        m.artifacts.forEach { a ->
+            Box(Modifier.widthIn(max = 300.dp)) {
+                ArtifactCard(a = a, onOpen = onOpenArtifact)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TypingBubble(streaming: String) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.widthIn(max = 300.dp)
+        ) {
+            Text(
+                if (streaming.isBlank()) "…" else streaming,
+                modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
+@Composable
+private fun Composer(
+    value: String,
+    onChange: (String) -> Unit,
+    attachment: String?,
+    attachmentIsAudio: Boolean,
+    showImageAttach: Boolean,
+    showAudioAttach: Boolean,
+    busy: Boolean,
+    thinking: Boolean,
+    webSearch: Boolean,
+    onToggleThinking: () -> Unit,
+    onToggleWebSearch: () -> Unit,
+    onAttachImage: () -> Unit,
+    onAttachAudio: () -> Unit,
+    onAttachFile: () -> Unit,
+    onClearAttachment: () -> Unit,
+    onVoice: () -> Unit,
+    onSend: () -> Unit
+) {
+    Surface(tonalElevation = 3.dp) {
+        Column(Modifier.fillMaxWidth().padding(8.dp)) {
+            if (attachment != null) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (attachmentIsAudio) Icons.Default.MusicNote else Icons.Default.Image,
+                        null, modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (attachmentIsAudio) "Audio attached" else "Image attached",
+                        style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onClearAttachment) { Icon(Icons.Default.Close, "Remove attachment") }
+                }
+            }
+            OutlinedTextField(
+                value = value,
+                onValueChange = onChange,
+                placeholder = { Text("Message input") },
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = 5
+            )
+            // Thinking + web search sit beside the input, not in the top bar.
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                ToolToggle("Thinking", Icons.Default.Psychology, thinking, onToggleThinking)
+                ToolToggle("Search", Icons.Default.Public, webSearch, onToggleWebSearch)
+                if (showImageAttach) {
+                    IconButton(onClick = onAttachImage) { Icon(Icons.Default.Image, "Attach image") }
+                }
+                if (showAudioAttach) {
+                    IconButton(onClick = onAttachAudio) { Icon(Icons.Default.MusicNote, "Attach audio") }
+                }
+                IconButton(onClick = onAttachFile) { Icon(Icons.Default.AttachFile, "Attach file") }
+                IconButton(onClick = onVoice) { Icon(Icons.Default.Mic, "Voice input") }
+                Spacer(Modifier.weight(1f))
+                FilledIconButton(onClick = onSend, enabled = !busy) { Icon(Icons.Default.Send, "Send") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolToggle(label: String, icon: ImageVector, active: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Icon(
+            icon, label,
+            tint = if (active) MaterialTheme.colorScheme.primary else LocalContentColor.current
+        )
+    }
+}
+
+// --- app info ---------------------------------------------------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InfoScreen(onMenu: () -> Unit) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = { IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, "Open drawer") } },
+                title = { Text("App Info") }
+            )
+        }
+    ) { pad ->
+        Column(
+            Modifier.padding(pad).padding(16.dp).fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Altair", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(
+                "Local GGUF inference with an OpenAI-compatible server.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(8.dp))
+            Text("Beyond PocketPal", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            listOf(
+                "HuggingFace in-app download portal (model + mmproj)",
+                "BYOK cloud providers, unlimited keys + custom endpoints",
+                "Embedded OpenAI-compatible server",
+                "mmproj library with auto-pairing + explicit pairing",
+                "Built-in web search grounding",
+                "Multi-chat history with pin/rename/share",
+                "Per-message copy/edit/retry/delete/read-aloud"
+            ).forEach { Text("- $it", style = MaterialTheme.typography.bodyMedium) }
+        }
+    }
+}
+
+// --- shared helpers ---------------------------------------------------------
+
+/** Share a conversation transcript through the system chooser. */
+fun shareText(context: Context, text: String, title: String) {
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, title)
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(send, "Share conversation"))
+}
+
+/** Copy a picked content Uri into a cache file the native mtmd path can read. */
+private fun copyUriToTemp(context: Context, uri: Uri, isAudio: Boolean = false, keepName: Boolean = false): String? = runCatching {
+    val name = if (keepName) {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        } ?: "attach_${System.currentTimeMillis()}"
+    } else "attach_${System.currentTimeMillis()}"
+    val ext = if (isAudio) "wav" else (name.substringAfterLast('.', "jpg").take(8))
+    val base = if (isAudio) "attach_${System.currentTimeMillis()}" else name.substringBeforeLast('.', name)
+    val f = File(context.cacheDir, "$base.$ext")
+    context.contentResolver.openInputStream(uri)!!.use { input ->
+        f.outputStream().use { output -> input.copyTo(output) }
+    }
+    f.absolutePath
+}.getOrNull()

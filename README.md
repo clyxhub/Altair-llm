@@ -1,45 +1,46 @@
-# Altair LLM
+# Altair
 
-Local-first AI hub — one lightweight engine, many faces.
+Local-first AI hub — one engine, many faces. **Light · efficient · powerful.**
 
-**Prime directive: LIGHT · EFFICIENT · POWERFUL**
+The full specification lives in [`docs/BUILD-PLAN.md`](docs/BUILD-PLAN.md) and is the
+source of truth for this project.
 
-- 🪶 **Light**: < 30 MB app footprint (excl. models), < 80 MB idle RAM
-- ⚡ **Efficient**: one resident model, mmap weights, quantized KV cache, zero background work
-- 💪 **Powerful**: multimodal artifacts, MCP, multi-agent mesh inference, agentic web — capability scales with the model's *actual profile*, never with the device
+## Status
+
+The Android app (the phone face) is built on the proven on-device llama.cpp
+integration ported from `clyxhub/Hermes-llama-android` — native Kotlin/Compose,
+in-process GGUF + mmproj inference via JNI/NDK, Vulkan with CPU fallback, HF
+model portal, embedded OpenAI-compatible server + mDNS.
+
+The remaining Altair-plan systems — capability registry + token budgeter,
+staged memory/retrieval, MCP/plugins, multi-agent orchestration + mesh
+inference, agentic web, multiplayer, and device automation — are layered onto
+this base per the plan's phase order.
 
 ## Repository layout
 
 ```
-engine/     Agent core (TypeScript) — OpenAI-compatible API server + agent runtime
-web/        Web UI (React + Vite) — served by the engine; works on phone, desktop, LAN
-android/    Android shell (WebView + JNI; llama.cpp NDK integration lands next)
-docs/       Build plan & roadmap
+android/    Native Android app (Kotlin/Compose + JNI). The on-device "face".
+engine/     Agent core (TypeScript) — OpenAI-compatible runtime (LAN/desktop face)
+web/        Web UI (React) — served to LAN/desktop clients
+docs/       Build plan (source of truth) & roadmap
 .github/    CI — GitHub Actions builds the APK off-device
+scripts/    Build helpers (Vulkan patches)
 ```
 
-## Status
+## Build
 
-Phase 0 — skeleton + CI pipeline. See `docs/BUILD-PLAN.md` for the full roadmap.
-
-## Quick start (desktop)
+All native compilation happens in GitHub Actions (`.github/workflows/build.yml`):
+it fetches llama.cpp at a pinned revision, then Gradle builds the release APK.
 
 ```sh
-# terminal 1 — engine
-cd engine && npm install && npm run dev
+cd android
+./gradlew assembleRelease      # requires NDK 26.1, CMake 3.22.1, glslc, llama.cpp in android/third_party
+```
 
-# terminal 2 — web UI (dev mode, proxies /v1 to engine)
+The engine and web UI run anywhere Node does:
+
+```sh
+cd engine && npm install && npm run build && npm start
 cd web && npm install && npm run dev
 ```
-
-Or build the web bundle once and let the engine serve it:
-
-```sh
-cd web && npm install && npm run build
-cp -r dist ../android/app/src/main/assets/www/   # optional: bundle into APK
-cd ../engine && npm install && npm run build && npm start
-# → http://localhost:8787
-```
-
-The engine exposes an OpenAI-compatible API (`/v1/chat/completions` with SSE streaming),
-so any OpenAI-compatible client can point at `http://<device>:8787/v1`.

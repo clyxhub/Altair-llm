@@ -12,122 +12,81 @@ concurrency:
 jobs:
   apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            engine/package-lock.json
+          fetch-depth: 1
 
-      - name: Build web UI
-        run: |
-          cd web
-          npm ci
-          npm run build
-          mkdir -p ../android/app/src/main/assets/www
-          cp -r dist/* ../android/app/src/main/assets/www/
-
-      - name: Bundle engine
-        run: |
-          cd engine
-          npm ci
-          npm run build
-          cd ..
-          zip -qr altair-engine.zip engine/dist engine/package.json
-
-      - name: Set up JDK
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
-      - name: Install Android SDK pieces
+      - name: Set up Android SDK (NDK 26.1, CMake 3.22.1, platform 34)
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 ndk;26.1.10909125 cmake;3.22.1'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install host glslc (Vulkan shader compiler)
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            "ndk;27.2.12479018" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y glslc
+          echo "${ANDROID_HOME}/ndk/26.1.10909125/shader-tools/linux-x86_64" >> "$GITHUB_PATH"
 
-      - name: Build llama.cpp (llama-server + Vulkan) for Android
+      - name: Fetch llama.cpp (pinned for reproducible native build)
         run: |
-          git clone --depth 1 --branch v0.6.0 https://github.com/ggml-org/llama.cpp /tmp/llama.cpp
-          cd /tmp/llama.cpp
-          # Port of the Hermes (Adreno 660) Vulkan patches: fixes NULL-dispatcher
-          # SIGSEGVs on Android device-level Vulkan 1.2 entry points
-          python3 "$GITHUB_WORKSPACE/scripts/apply-hermes-vulkan-patches.py" \
-            ggml/src/ggml-vulkan/ggml-vulkan.cpp
-          NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/27.2.12479018)
-          export PATH="$PATH:$NDK_DIR/shader-tools/$(ls "$NDK_DIR/shader-tools" | head -1)"
-          # Cross-compile has no host Vulkan SDK: provide an arm64 stub libvulkan.so.
-          # Headers resolve from the NDK sysroot; at runtime Android's real system
-          # libvulkan.so is used (it's a public platform library).
-          VSTUB=/tmp/vulkan-stub/lib
-          mkdir -p "$VSTUB"
-          echo 'void __altair_vulkan_stub(void){}' > /tmp/vulkan-stub/noop.c
-          "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" \
-            --target=aarch64-linux-android24 -shared \
-            -o "$VSTUB/libvulkan.so" /tmp/vulkan-stub/noop.c
-          export VULKAN_SDK=/tmp/vulkan-stub
-          # ggml-vulkan requires the Khronos SPIRV-Headers config package (header-only)
-          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers /tmp/SPIRV-Headers
-          cmake -S /tmp/SPIRV-Headers -B /tmp/spirv-build -DCMAKE_INSTALL_PREFIX=/tmp/spirv-install > /dev/null
-          cmake --install /tmp/spirv-build > /dev/null
-          # NDK ships vulkan.h but not the C++ bindings (vulkan.hpp) that ggml-vulkan uses.
-          # Copy them into the NDK sysroot so every compile sees them.
-          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers /tmp/Vulkan-Headers
-          cmake -S /tmp/Vulkan-Headers -B /tmp/vh-build -DCMAKE_INSTALL_PREFIX=/tmp/vh-install > /dev/null
-          cmake --install /tmp/vh-build > /dev/null
-          cp -r /tmp/vh-install/include/vulkan "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/"
-          cp -r /tmp/vh-install/include/vk_video "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/"
-          cp -r /tmp/spirv-install/include/spirv "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/"
-          ls "$NDK_DIR/sysroot/usr/include/vulkan" | head -5
-          cmake -B build-android \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-28 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_VULKAN=ON \
-            -DGGML_OPENMP=OFF \
-            -DGGML_LLAMAFILE=OFF \
-            -DGGML_BACKEND_DL=OFF \
-            -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_BUILD_TOOLS=ON \
-            -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_PREFIX_PATH=/tmp/spirv-install \
-            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
-            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH
-          cmake --build build-android --target llama-server -j"$(nproc)"
-          OUT="$GITHUB_WORKSPACE/android/app/src/main/jniLibs/arm64-v8a"
-          mkdir -p "$OUT"
-          cp build-android/bin/llama-server "$OUT/libaltairserver.so"
-          # v0.6.0 splits the server across several shared libs (llama-server-impl,
-          # llama-common, mtmd, ...) — copy every built shared lib
-          find build-android -name "lib*.so" -exec cp {} "$OUT" \;
-          ls -la "$OUT"
+          git clone --filter=blob:none --no-checkout https://github.com/ggml-org/llama.cpp android/third_party/llama.cpp
+          git -C android/third_party/llama.cpp checkout 08ffba21e5c2f1728b6b405c05ff3913f65706d4
+          echo "llama.cpp: $(git -C android/third_party/llama.cpp rev-parse --short HEAD)"
+          ls android/third_party/llama.cpp | head
 
-      - name: Build APK (debug)
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: android/app/.cxx
+          key: ${{ runner.os }}-cxx-${{ hashFiles('android/app/src/main/cpp/**', 'android/third_party/llama.cpp/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-cxx-
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release APK
         run: |
           cd android
-          chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          chmod +x ./gradlew
+          set +e
+          ./gradlew --no-daemon assembleRelease > gradle-build.log 2>&1
+          RC=$?
+          echo "gradlew exit code: $RC"
+          tail -n 150 gradle-build.log || true
+          exit $RC
 
-      - name: Upload APK artifact
+      - name: Publish build log on failure (diagnostics branch)
+        if: failure()
+        continue-on-error: true
+        run: |
+          git config user.email "ci@altair.local"
+          git config user.name "Altair CI"
+          mkdir -p ci-logs
+          cp android/gradle-build.log ci-logs/last-build.log 2>/dev/null || echo "(no log)" > ci-logs/last-build.log
+          git checkout -B ci-diagnostics
+          git add -f ci-logs/last-build.log
+          git commit -m "CI diagnostics for run ${{ github.run_number }}" || true
+          git push -f origin ci-diagnostics
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Altair-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-
-      - name: Upload engine bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: altair-engine
-          path: altair-engine.zip
+          name: Altair-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error

@@ -5,19 +5,35 @@ plugins {
 
 android {
     namespace = "com.altair.llm"
-    compileSdk = 35
-    ndkVersion = "27.2.12479018"
+    compileSdk = 34
+    // Pinned to match the NDK installed in CI (.github/workflows/build.yml).
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
         applicationId = "com.altair.llm"
-        minSdk = 24
-        targetSdk = 35
+        minSdk = 28
+        targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
 
+        // Stage (a): arm64 only. x86_64 added later for emulator testing.
         ndk {
-            // arm64-v8a first; more ABIs later as llama.cpp integration lands
             abiFilters += listOf("arm64-v8a")
+        }
+
+        externalNativeBuild {
+            cmake {
+                // Stage (a): CPU-only. Vulkan (stage b) adds -DGGML_VULKAN=ON.
+                // (GGML_VULKAN is forced ON in app/src/main/cpp/CMakeLists.txt
+                //  together with the vendored Vulkan/SPIR-V dev-kit there.)
+                arguments += listOf(
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DGGML_LLAMAFILE=OFF",
+                    "-DLLAMA_CURL=OFF",
+                    "-DGGML_OPENMP=OFF"
+                )
+                cppFlags += "-O3"
+            }
         }
     }
 
@@ -31,14 +47,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-        }
-    }
-
-    // Extract native libs to nativeLibraryDir so llama-server can be exec()'d
-    // (direct-from-APK loading would leave no executable file on disk).
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
+            // Signed with the debug key for now so `assembleRelease` works in CI
+            // without secrets. Swap to a real keystore before any distribution.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -49,8 +60,35 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    buildFeatures {
+        compose = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
 }
 
 dependencies {
-    implementation("androidx.webkit:webkit:1.12.1")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    // Required for androidx.lifecycle.viewmodel.compose.viewModel() used by
+    // ChatScreen(); without it compileReleaseKotlin fails with
+    // "Unresolved reference: compose / viewModel".
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
+    implementation("androidx.activity:activity-compose:1.9.1")
+
+    implementation(platform("androidx.compose:compose-bom:2024.08.00"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

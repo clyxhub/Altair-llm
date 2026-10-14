@@ -10,6 +10,7 @@ build/
 # Android
 android/app/src/main/assets/www/
 android/app/src/main/jniLibs/
+android/third_party/
 android/.gradle/
 android/local.properties
 android/app/build/
