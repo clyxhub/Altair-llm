@@ -115,7 +115,6 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                     null
                 )
             }
-
             item {
                 val id = state.currentModelId
                 SettingRow(
@@ -200,15 +199,12 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                     )
                 }
             }
-
             item { SectionHeader("Memory Settings") }
             item { SettingRow("Memory Mapping", "Enabled by default", null) }
             item { SettingRow("Use Memory Lock", "Not available in this build", null) }
             item { SettingRow("Enable Weight Repacking", "Enabled by default", null) }
-
             item { SectionHeader("About") }
             item { SettingRow("Altair", "0.1.0 - local llama.cpp on-device", null) }
-
             item { SectionHeader("Memory") }
             item {
                 var memCount by remember { mutableStateOf(MemoryStore.count(context)) }
@@ -219,8 +215,8 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                     TextButton(onClick = { MemoryStore.clear(context); memCount = 0 }) { Text("Clear") }
                 }
             }
-
-            item { SectionHeader("Diagnostics") }            item {
+            item { SectionHeader("Diagnostics") }
+            item {
                 val log = remember { mutableStateOf(LogRing.dump()) }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
