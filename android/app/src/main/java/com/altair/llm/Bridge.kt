@@ -34,6 +34,13 @@ class Bridge(private val activity: Activity) {
     }
 
     @JavascriptInterface
+    fun importModel() {
+        activity.runOnUiThread {
+            (activity as? MainActivity)?.startModelImport()
+        }
+    }
+
+    @JavascriptInterface
     fun listLocalModels(): String = EngineManager.listLocalModels()
 
     @JavascriptInterface

@@ -72,7 +72,16 @@ function DeviceModels() {
   useEffect(() => {
     void refresh();
     const t = setInterval(refresh, 1500);
-    return () => clearInterval(t);
+    // SAF import callback from the Android file picker
+    (window as any).__altair = {
+      onImportDone: () => {
+        setTimeout(refresh, 400);
+      },
+    };
+    return () => {
+      clearInterval(t);
+      delete (window as any).__altair;
+    };
   }, [refresh]);
 
   const search = async () => {
@@ -122,7 +131,11 @@ function DeviceModels() {
 
       <section className="card">
         <h3>Model library</h3>
-        {local.length === 0 && <p className="hint">No models yet — download one from HuggingFace below.</p>}
+        <div className="row" style={{ marginBottom: 8 }}>
+          <button onClick={() => bridge.importModel()}>+ Add from device</button>
+          <span className="hint">pick a .gguf (model or mmproj) already on this phone</span>
+        </div>
+        {local.length === 0 && <p className="hint">No models yet — add from device or download from HuggingFace below.</p>}
         {local.map((m) => {
           const grade = fitGrade(m.size, device);
           const isLoaded = status?.model === m.path && running;

@@ -21,6 +21,7 @@ function parse<T>(fn: () => string): T {
 
 export const bridge = {
   deviceInfo: (): DeviceInfo | null => tryOrNull(() => parse<DeviceInfo>(() => raw().deviceInfo())),
+  importModel: (): void => raw()?.importModel(),
   listLocalModels: (): LocalModel[] => (raw() ? parse<LocalModel[]>(() => raw().listLocalModels()) : []),
   hfSearch: async (query: string): Promise<HfRepo[]> => {
     const r = raw();
