@@ -1,0 +1,26 @@
+# Build outputs
+node_modules/
+dist/
+build/
+.cxx/
+*.apk
+*.aab
+*.zip
+
+# Android
+android/app/src/main/assets/www/
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+android/.idea/
+
+# Env / secrets
+.env
+.env.*
+*.jks
+*.keystore
+
+# OS / editor
+.DS_Store
+Thumbs.db
