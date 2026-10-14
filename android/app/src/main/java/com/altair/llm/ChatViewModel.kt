@@ -432,6 +432,46 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- generation ---------------------------------------------------------
 
+    /**
+     * Phase 4.5: multi-agent run. Subagents run sequentially on this device
+     * (one resident model), each with its own small context, and the last step
+     * synthesizes the final answer. Mode should scale with the model profile in
+     * later tuning; three roles keeps a phone budget sane.
+     */
+    private fun runAgentTask(chat: Chat, task: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val sb = StringBuilder("**Multi-agent run**\n\n")
+            _state.update { it.copy(streaming = sb.toString()) }
+
+            val roles = listOf(AgentRoles.PLANNER, AgentRoles.BUILDER, AgentRoles.REVIEWER)
+            val outputs = ArrayList<Pair<AgentRole, String>>()
+            for (role in roles) {
+                val brief = outputs.joinToString("\n\n") { "[" + it.first.name + "]\n" + it.second }.take(3000)
+                val prompt = "${role.systemPrompt}\n\nTask:\n$task" +
+                    (if (brief.isBlank()) "" else "\n\nContext so far:\n$brief")
+                val out = StringBuilder()
+                runCatching { LlamaBridge.generate(prompt, 384, 0.7f, 0.9f) { t -> out.append(t) } }
+                val text = scrub(out.toString().trim())
+                outputs.add(role to text)
+                sb.append("### ").append(role.name).append("\n").append(text).append("\n\n")
+                _state.update { it.copy(streaming = sb.toString()) }
+                LogRing.add("agent", "${role.name} -> ${text.take(100)}")
+            }
+
+            val synth = outputs.joinToString("\n\n") { "[" + it.first.name + "]\n" + it.second }.take(5000)
+            val finPrompt = "Synthesize the final answer for the user from these specialist outputs. " +
+                "Be concise and complete.\n\nTask:\n$task\n\n$synth"
+            val fin = StringBuilder()
+            runCatching { LlamaBridge.generate(finPrompt, 512, 0.7f, 0.9f) { t -> fin.append(t) } }
+            sb.append("### Final\n").append(scrub(fin.toString().trim()))
+
+            chat.messages.add(Msg("assistant", sb.toString()))
+            chat.updatedAt = System.currentTimeMillis()
+            save(); push()
+            _state.update { it.copy(busy = false, streaming = "", status = "Agent run complete") }
+        }
+    }
+
     private fun buildPrompt(
         preset: PresetEngine.Preset,
         turns: List<Msg>,
@@ -526,6 +566,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun send(input: String, mediaPath: String? = null) {
         val chat = current() ?: return
+
+        // Phase 4.5: multi-agent run via the /agent command.
+        val trimmed = input.trim()
+        if (trimmed.startsWith("/agent ")) {
+            val task = trimmed.removePrefix("/agent ").trim()
+            if (task.isBlank()) return
+            chat.messages.add(Msg("user", task))
+            ChatStore.autoTitle(chat)
+            chat.updatedAt = System.currentTimeMillis()
+            save()
+            _state.update { it.copy(current = current(), streaming = "", busy = true, status = "Agent run…") }
+            runAgentTask(chat, task)
+            return
+        }
+
         val s = _state.value
         if ((input.isBlank() && mediaPath == null) || s.busy) return
 

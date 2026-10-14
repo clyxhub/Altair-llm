@@ -279,6 +279,29 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                 }
             }
 
+            item { SectionHeader("Agents & Mesh") }
+            item {
+                SettingRow(
+                    "Agent roles",
+                    AgentRoles.builtins.joinToString(", ") { it.name } + "  ·  use /agent <task> in chat"
+                )
+            }
+            item {
+                var mesh by remember { mutableStateOf(MeshCatalog.cached()) }
+                var scanning by remember { mutableStateOf(false) }
+                val handler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+                SettingRow(
+                    "LAN peers (mesh inference)",
+                    if (mesh.isEmpty()) "none discovered — run the server on another device, then Scan"
+                    else mesh.joinToString(", ") { "${it.name} (${it.models.size} models)" }
+                ) {
+                    TextButton(onClick = {
+                        scanning = true
+                        MeshCatalog.discover(context, 4000) { p -> handler.post { mesh = p; scanning = false } }
+                    }) { Text(if (scanning) "…" else "Scan") }
+                }
+            }
+
             item { SectionHeader("Memory") }
             item {
                 var memCount by remember { mutableStateOf(MemoryStore.count(context)) }
