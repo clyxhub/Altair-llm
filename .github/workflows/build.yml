@@ -60,6 +60,10 @@ jobs:
         run: |
           git clone --depth 1 --branch v0.6.0 https://github.com/ggml-org/llama.cpp /tmp/llama.cpp
           cd /tmp/llama.cpp
+          # Port of the Hermes (Adreno 660) Vulkan patches: fixes NULL-dispatcher
+          # SIGSEGVs on Android device-level Vulkan 1.2 entry points
+          python3 "$GITHUB_WORKSPACE/scripts/apply-hermes-vulkan-patches.py" \
+            ggml/src/ggml-vulkan/ggml-vulkan.cpp
           NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/27.2.12479018)
           export PATH="$PATH:$NDK_DIR/shader-tools/$(ls "$NDK_DIR/shader-tools" | head -1)"
           # Cross-compile has no host Vulkan SDK: provide an arm64 stub libvulkan.so.

@@ -1,15 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
-import { bridge, fitGrade, fmtBytes, hasBridge, type HfFile, type HfRepo, type LocalModel } from "../bridge";
+import { bridge, fitGrade, fmtBytes, hasBridge, type LocalModel } from "../bridge";
 import { getEndpoint, setEndpoint } from "../api";
+import type { Section } from "../App";
+
+type Props = { onMenu: () => void; go: (s: Section) => void };
 
 type Download = { id: string; file: string; status: string; downloaded: number; total: number; error?: string | null };
 
-export default function Models() {
+export default function Models({ onMenu, go }: Props) {
   const onDevice = hasBridge();
   return (
-    <div className="models">
-      <ConnectionBox />
-      {onDevice ? <DeviceModels /> : <DesktopNotice />}
+    <div className="section-body">
+      <header className="appbar">
+        <button className="iconbtn" onClick={onMenu} title="Menu">
+          ☰
+        </button>
+        <div className="appbar-title">Models</div>
+        <button className="iconbtn" onClick={() => go("hf")} title="Find more models">
+          ＋
+        </button>
+      </header>
+      <div className="list">
+        <ConnectionBox />
+        {onDevice ? <DeviceModels /> : <DesktopNotice />}
+      </div>
     </div>
   );
 }
@@ -19,7 +33,7 @@ function ConnectionBox() {
   const saved = value !== getEndpoint();
   return (
     <section className="card">
-      <h3>Connection</h3>
+      <div className="label-row">Connection</div>
       <div className="row">
         <input
           value={value}
@@ -31,10 +45,7 @@ function ConnectionBox() {
           Save
         </button>
       </div>
-      <p className="hint">
-        Chat runs against this endpoint. On-device default is the local engine (127.0.0.1:8077);
-        point it at your PC over LAN to use bigger models.
-      </p>
+      <p className="hint">Chat runs against this endpoint. On-device default is the local engine (127.0.0.1:8077).</p>
     </section>
   );
 }
@@ -42,10 +53,10 @@ function ConnectionBox() {
 function DesktopNotice() {
   return (
     <section className="card">
-      <h3>Models</h3>
+      <div className="label-row">On-device models</div>
       <p className="hint">
-        HuggingFace browsing and on-device GGUF management are available in the Android app.
-        On desktop, run llama-server / any OpenAI-compatible server and point Connection at it.
+        GGUF management is available in the Android app. On desktop, run llama-server or any OpenAI-compatible
+        server and point Connection at it.
       </p>
     </section>
   );
@@ -54,13 +65,8 @@ function DesktopNotice() {
 function DeviceModels() {
   const [device, setDevice] = useState<ReturnType<typeof bridge.deviceInfo>>(null);
   const [local, setLocal] = useState<LocalModel[]>([]);
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<HfRepo[]>([]);
-  const [openRepo, setOpenRepo] = useState<{ repo: HfRepo; files: HfFile[] } | null>(null);
   const [downloads, setDownloads] = useState<Download[]>([]);
   const [status, setStatus] = useState<ReturnType<typeof bridge.serverStatus>>(null);
-  const [searchErr, setSearchErr] = useState<string | null>(null);
-  const [busyRepo, setBusyRepo] = useState(false);
 
   const refresh = useCallback(async () => {
     setDevice(bridge.deviceInfo());
@@ -72,49 +78,21 @@ function DeviceModels() {
   useEffect(() => {
     void refresh();
     const t = setInterval(refresh, 1500);
-    // SAF import callback from the Android file picker
-    (window as any).__altair = {
-      onImportDone: () => {
-        setTimeout(refresh, 400);
-      },
-    };
+    (window as any).__altair = { onImportDone: () => setTimeout(refresh, 400) };
     return () => {
       clearInterval(t);
       delete (window as any).__altair;
     };
   }, [refresh]);
 
-  const search = async () => {
-    setBusyRepo(true);
-    setSearchErr(null);
-    try {
-      setResults(await bridge.hfSearch(query));
-    } catch (e: any) {
-      setSearchErr(e?.message ?? "search failed");
-    } finally {
-      setBusyRepo(false);
-    }
-  };
-
-  const openFiles = async (repo: HfRepo) => {
-    setBusyRepo(true);
-    try {
-      setOpenRepo({ repo, files: await bridge.hfTree(repo.repoId) });
-    } finally {
-      setBusyRepo(false);
-    }
-  };
-
   const running = status?.state === "running" || status?.state === "starting";
 
   return (
     <>
       <section className="card">
-        <h3>Local engine</h3>
+        <div className="label-row">Local engine</div>
         <div className="row">
-          <span className={`badge ${running ? "ok" : "off"}`}>
-            {status ? `${status.state} :${status.port}` : "unknown"}
-          </span>
+          <span className={`badge ${running ? "ok" : "off"}`}>{status ? `${status.state} :${status.port}` : "unknown"}</span>
           {running ? (
             <button className="danger" onClick={() => bridge.stopServer()}>
               Stop
@@ -124,24 +102,22 @@ function DeviceModels() {
           )}
         </div>
         {status?.error && <p className="hint err">{status.error}</p>}
-        {status?.log && status.log.length > 0 && (
-          <pre className="logbox">{status.log.slice(-6).join("\n")}</pre>
-        )}
+        {status?.log && status.log.length > 0 && <pre className="logbox">{status.log.slice(-6).join("\n")}</pre>}
       </section>
 
       <section className="card">
-        <h3>Model library</h3>
+        <div className="label-row">On this device</div>
         <div className="row" style={{ marginBottom: 8 }}>
           <button onClick={() => bridge.importModel()}>+ Add from device</button>
           <span className="hint">pick a .gguf (model or mmproj) already on this phone</span>
         </div>
-        {local.length === 0 && <p className="hint">No models yet — add from device or download from HuggingFace below.</p>}
+        {local.length === 0 && <p className="hint">Nothing here yet — import files or open HuggingFace to download.</p>}
         {local.map((m) => {
           const grade = fitGrade(m.size, device);
           const isLoaded = status?.model === m.path && running;
           return (
             <div className="mrow" key={m.id}>
-              <div className="minfo">
+              <div className="minfo clickable" onClick={() => !isLoaded && running === false && bridge.startServer({ modelPath: m.path, mmprojPath: m.mmprojPath, ctx: device?.suggestCtx })}>
                 <div className="mname">{m.id}</div>
                 <div className="msub">
                   {fmtBytes(m.size)}
@@ -153,17 +129,7 @@ function DeviceModels() {
               {isLoaded ? (
                 <span className="badge ok">loaded</span>
               ) : (
-                <button
-                  onClick={() =>
-                    bridge.startServer({
-                      modelPath: m.path,
-                      mmprojPath: m.mmprojPath,
-                      ctx: device?.suggestCtx,
-                    })
-                  }
-                >
-                  Start
-                </button>
+                <button onClick={() => bridge.startServer({ modelPath: m.path, mmprojPath: m.mmprojPath, ctx: device?.suggestCtx })}>Start</button>
               )}
               <button
                 className="ghost danger"
@@ -184,7 +150,7 @@ function DeviceModels() {
 
       {downloads.length > 0 && (
         <section className="card">
-          <h3>Downloads</h3>
+          <div className="label-row">Downloads</div>
           {downloads.map((d) => {
             const pct = d.total > 0 ? Math.min(100, (d.downloaded / d.total) * 100) : 0;
             return (
@@ -219,68 +185,6 @@ function DeviceModels() {
           })}
         </section>
       )}
-
-      <section className="card">
-        <h3>HuggingFace</h3>
-        <div className="row">
-          <input
-            value={query}
-            placeholder='Search GGUF models, e.g. "qwen3 4b gguf"'
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && void search()}
-            spellCheck={false}
-          />
-          <button disabled={busyRepo || !query.trim()} onClick={() => void search()}>
-            Search
-          </button>
-        </div>
-        {searchErr && <p className="hint err">{searchErr}</p>}
-        <div className="hflist">
-          {results.map((r) => (
-            <div className="hrow" key={r.repoId} onClick={() => void openFiles(r)}>
-              <div>
-                <div className="mname">{r.repoId}</div>
-                <div className="msub">
-                  ↓ {r.downloads.toLocaleString()} · ★ {r.likes}
-                </div>
-              </div>
-              <span className="chev">›</span>
-            </div>
-          ))}
-        </div>
-
-        {openRepo && (
-          <div className="files">
-            <div className="row">
-              <h4>{openRepo.repo.repoId}</h4>
-              <button className="ghost" onClick={() => setOpenRepo(null)}>
-                ✕
-              </button>
-            </div>
-            {openRepo.files.map((f) => {
-              const grade = fitGrade(f.size, device);
-              const name = f.path.split("/").pop() ?? f.path;
-              return (
-                <div className="frow" key={f.path}>
-                  <div className="minfo">
-                    <div className="mname">{name}</div>
-                    <div className="msub">{fmtBytes(f.size)}</div>
-                  </div>
-                  <span className={`dot ${grade.grade}`} title={grade.why} />
-                  <button
-                    onClick={() => {
-                      bridge.startDownload(openRepo.repo.repoId, f.path, f.size);
-                      setTimeout(refresh, 500);
-                    }}
-                  >
-                    Get
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
     </>
   );
 }

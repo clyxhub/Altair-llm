@@ -30,6 +30,13 @@ object EngineManager {
     private val logLock = Any()
     private var appContext: Context? = null
 
+    private var curNgl = 0
+    private var autoRetryDone = false
+    private var pendingMmproj: String? = null
+    private var pendingPort = DEFAULT_PORT
+    private var pendingCtx = 4096
+    private var pendingThreads = 4
+
     fun init(ctx: Context) {
         if (appContext == null) appContext = ctx.applicationContext
     }
@@ -60,9 +67,14 @@ object EngineManager {
         return arr.toString()
     }
 
-    fun start(modelPath: String, mmprojPath: String?, port: Int, ctxSize: Int, threads: Int, ngl: Int): Boolean {
+    fun start(modelPath: String, mmprojPath: String?, port: Int, ctxSize: Int, threads: Int, ngl: Int, isAutoRetry: Boolean = false): Boolean {
         val ctx = appContext ?: return false
         stop()
+        if (!isAutoRetry) autoRetryDone = false
+        pendingMmproj = mmprojPath
+        pendingPort = port
+        pendingCtx = ctxSize
+        pendingThreads = threads
         val exe = File(ctx.applicationInfo.nativeLibraryDir, "libaltairserver.so")
         if (!exe.exists()) {
             state = "error"; errorMessage = "native server missing (unsupported ABI?)"; return false
@@ -83,6 +95,7 @@ object EngineManager {
 
         this.port = port
         this.modelPath = modelPath
+        curNgl = ngl
         state = "starting"
         errorMessage = null
         synchronized(logLock) { log.clear() }
@@ -103,6 +116,13 @@ object EngineManager {
                 if (state != "running" && state != "stopped") {
                     state = "error"
                     errorMessage = "server exited during startup (see log)"
+                    // Auto-fallback: a fast exit right after launch usually means the
+                    // Vulkan backend crashed on this device. Retry once CPU-only.
+                    if (!autoRetryDone && curNgl > 0 && state != "stopped") {
+                        autoRetryDone = true
+                        appendLog("retrying with -ngl 0 (CPU inference) — GPU startup failed")
+                        start(modelPath, pendingMmproj, pendingPort, pendingCtx, pendingThreads, 0, isAutoRetry = true)
+                    }
                 }
             }.start()
 

@@ -39,6 +39,9 @@ class MainActivity : Activity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             allowFileAccess = true
+            // Samsung One UI ships font scale >1.0 which WebView applies as textZoom,
+            // inflating all text and pushing content off-screen. Lock to 100%.
+            textZoom = 100
             // the UI (file://) talks to the local engine over http://127.0.0.1
             @Suppress("DEPRECATION")
             allowUniversalAccessFromFileURLs = true

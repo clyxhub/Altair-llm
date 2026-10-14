@@ -40,12 +40,14 @@ export async function streamChat(
   model: string,
   messages: ChatMessage[],
   onDelta: (text: string) => void,
-  endpoint = getEndpoint()
+  endpoint = getEndpoint(),
+  signal?: AbortSignal
 ): Promise<string> {
   const res = await fetch(`${endpoint.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, stream: true, messages }),
+    signal,
   });
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => "");
