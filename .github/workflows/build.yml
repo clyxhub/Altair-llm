@@ -76,11 +76,13 @@ jobs:
           git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers /tmp/SPIRV-Headers
           cmake -S /tmp/SPIRV-Headers -B /tmp/spirv-build -DCMAKE_INSTALL_PREFIX=/tmp/spirv-install > /dev/null
           cmake --install /tmp/spirv-build > /dev/null
-          # NDK ships vulkan.h but not the C++ bindings (vulkan.hpp) that ggml-vulkan uses
+          # NDK ships vulkan.h but not the C++ bindings (vulkan.hpp) that ggml-vulkan uses.
+          # Copy them into the NDK sysroot so every compile sees them.
           git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers /tmp/Vulkan-Headers
           cmake -S /tmp/Vulkan-Headers -B /tmp/vh-build -DCMAKE_INSTALL_PREFIX=/tmp/vh-install > /dev/null
           cmake --install /tmp/vh-build > /dev/null
-          export CXXFLAGS="-isystem /tmp/vh-install/include"
+          cp -r /tmp/vh-install/include/vulkan "$NDK_DIR/sysroot/usr/include/"
+          ls "$NDK_DIR/sysroot/usr/include/vulkan" | head -5
           cmake -B build-android \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
