@@ -116,11 +116,31 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                 )
             }
 
+            item {
+                val id = state.currentModelId
+                SettingRow(
+                    "Model profile",
+                    if (id == null) "No model loaded"
+                    else ModelRegistry.describe(
+                        ModelProfile(
+                            id = id,
+                            label = id,
+                            tier = ModelProfile.Tier.LOCAL_DEVICE,
+                            contextTokens = state.contextSize,
+                            supportsVision = state.capabilities.vision,
+                            supportsAudio = state.capabilities.audio,
+                            supportsTools = state.capabilities.tools,
+                            reasoning = state.capabilities.reasoning
+                        )
+                    ),
+                    null
+                )
+            }
+
             // Thinking / web-search live in the chat composer (single source of
             // truth) — deliberately NOT duplicated here.
 
-            item { SectionHeader("Local Server") }
-            item {
+            item { SectionHeader("Local Server") }            item {
                 SwitchRow(
                     "OpenAI-compatible server",
                     "Serve the loaded model to other apps",

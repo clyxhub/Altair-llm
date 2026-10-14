@@ -432,15 +432,38 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     // --- generation ---------------------------------------------------------
 
     private fun buildPrompt(preset: PresetEngine.Preset, turns: List<Msg>, thinking: Boolean): String {
+        // Apply the Qwen3 soft switch to the final user turn first.
+        val prepared = turns.mapIndexed { i, m ->
+            var c = m.content
+            if (!thinking && m.role == "user" && i == turns.lastIndex) c = "$c /no_think"
+            ContextBudgeter.Turn(m.role, c)
+        }
+
+        // §5 Token budgeter: fit system + turns into the model's REAL window,
+        // compacting older turns so the request never overflows (or OOMs).
+        val ctxTokens = runCatching { LlamaBridge.contextSize() }.getOrDefault(preset.contextSize)
+        val profile = ModelProfile(
+            id = "local",
+            label = preset.family,
+            tier = ModelProfile.Tier.LOCAL_DEVICE,
+            contextTokens = ctxTokens,
+            reasoning = preset.reasoning
+        )
+        val budgeted = ContextBudgeter.fit(
+            system = SYSTEM_PROMPT,
+            turns = prepared,
+            profile = profile,
+            countTokens = { s -> runCatching { LlamaBridge.countTokens(s) }.getOrDefault((s.length / 4).coerceAtLeast(1)) }
+        )
+        if (budgeted.summarized) {
+            LogRing.add("budget", "compacted ${budgeted.droppedTurns} turn(s) to fit ctx=$ctxTokens")
+        }
+
         val roles = mutableListOf<String>()
         val contents = mutableListOf<String>()
         if (SYSTEM_PROMPT.isNotBlank()) { roles += "system"; contents += SYSTEM_PROMPT }
-        turns.forEachIndexed { i, m ->
-            var c = m.content
-            // Qwen3 soft switch: "/no_think" in the final user turn disables reasoning.
-            if (!thinking && m.role == "user" && i == turns.lastIndex) c = "$c /no_think"
-            roles += m.role; contents += c
-        }
+        budgeted.turns.forEach { roles += it.role; contents += it.content }
+
         val tmpl = if (preset.chatTemplate == "gguf" || preset.chatTemplate == "none") "" else preset.chatTemplate
         val viaModel = runCatching { LlamaBridge.applyChatTemplate(tmpl, roles, contents, true) }.getOrNull()
         return viaModel ?: PresetEngine.applyTemplate(preset, SYSTEM_PROMPT, turns.lastOrNull()?.content ?: "")
