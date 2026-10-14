@@ -101,6 +101,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 Log.i(TAG, "system: " + LlamaBridge.systemInfo())
             }
             refreshModels()
+            ToolRegistry.init(getApplication())
             ToolRegistry.prefetch(getApplication())
             // Quick win: remember the last-used model and auto-load it.
             val last = prefs.getString(KEY_LAST_MODEL, null)

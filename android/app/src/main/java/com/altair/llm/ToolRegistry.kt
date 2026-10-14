@@ -34,6 +34,13 @@ object ToolRegistry {
 
     private const val KEY_DISABLED = "tools_disabled"
 
+    /** Application context for device tools (set once at startup). */
+    @Volatile private var appContext: android.content.Context? = null
+
+    fun init(ctx: android.content.Context) {
+        appContext = ctx.applicationContext
+    }
+
     private val builtins: List<Tool> = listOf(
         object : Tool {
             override val spec = ToolSpec(
@@ -79,6 +86,52 @@ object ToolRegistry {
             override fun run(args: JSONObject): String =
                 java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
                     .format(java.util.Date())
+        },
+        object : Tool {
+            override val spec = ToolSpec(
+                "open_app",
+                "Launch an installed app by (partial) name.",
+                "{\"name\":\"string\"}",
+                "builtin"
+            )
+            override fun run(args: JSONObject): String {
+                val ctx = appContext ?: return "no context"
+                val q = args.optString("name").lowercase().trim()
+                if (q.isEmpty()) return "missing 'name'"
+                val pm = ctx.packageManager
+                val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                val match = runCatching { pm.queryIntentActivities(intent, 0) }.getOrDefault(emptyList())
+                    .firstOrNull { runCatching { it.loadLabel(pm).toString().lowercase().contains(q) }.getOrDefault(false) }
+                    ?: return "app not found: $q"
+                val launch = android.content.Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                    .setClassName(match.activityInfo.packageName, match.activityInfo.name)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                return runCatching {
+                    ctx.startActivity(launch)
+                    "opened ${runCatching { match.loadLabel(pm) }.getOrDefault(match.activityInfo.packageName)}"
+                }.getOrElse { "could not launch: ${it.message}" }
+            }
+        },
+        object : Tool {
+            override val spec = ToolSpec(
+                "open_url",
+                "Open a URL in the device browser.",
+                "{\"url\":\"string\"}",
+                "builtin"
+            )
+            override fun run(args: JSONObject): String {
+                val ctx = appContext ?: return "no context"
+                val u = args.optString("url").ifBlank { return "missing 'url'" }
+                return runCatching {
+                    ctx.startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(u))
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                    "opened $u"
+                }.getOrElse { "could not open: ${it.message}" }
+            }
         }
     )
 

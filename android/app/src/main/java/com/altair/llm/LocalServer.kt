@@ -143,7 +143,9 @@ object LocalServer {
         val parts = requestLine.split(" ")
         if (parts.size < 2) return
         val method = parts[0].uppercase()
-        val path = parts[1].substringBefore('?')
+        val fullPath = parts[1]
+        val path = fullPath.substringBefore('?')
+        val query = fullPath.substringAfter('?', "")
 
         val headers = HashMap<String, String>()
         while (true) {
@@ -186,6 +188,34 @@ object LocalServer {
 
             method == "POST" && path == "/v1/completions" ->
                 handleCompletion(output, body)
+
+            // Phase 6: shared LAN rooms (tiny chat store on top of the server).
+            method == "GET" && path == "/rooms" ->
+                writeJson(output, 200, JSONObject().put("rooms", JSONArray(Rooms.list())))
+
+            method == "GET" && path == "/rooms/messages" -> {
+                val room = queryParam(query, "room").ifBlank { "general" }
+                val since = queryParam(query, "since").toIntOrNull() ?: 0
+                writeJson(output, 200, JSONObject().put("messages", JSONArray(Rooms.sinceJson(room, since))))
+            }
+
+            method == "POST" && path == "/rooms/message" -> {
+                val req = runCatching { JSONObject(String(body, Charsets.UTF_8)) }.getOrNull()
+                if (req == null) {
+                    writeJson(output, 400, JSONObject().put("error", "bad json"))
+                } else {
+                    val m = Rooms.post(
+                        req.optString("room", "general"),
+                        req.optString("author", "anon"),
+                        req.optString("text", "")
+                    )
+                    writeJson(
+                        output, 200,
+                        JSONObject().put("index", m.index).put("author", m.author)
+                            .put("text", m.text).put("time", m.time)
+                    )
+                }
+            }
 
             else -> writeJson(output, 404, JSONObject().put("error", "not found"))
         }
@@ -365,6 +395,19 @@ object LocalServer {
     // --- helpers -------------------------------------------------------------
 
     private fun err(msg: String) = JSONObject().put("error", JSONObject().put("message", msg))
+
+    /** Extract a query parameter from a raw query string. */
+    private fun queryParam(query: String, name: String): String {
+        if (query.isBlank()) return ""
+        for (part in query.split('&')) {
+            val i = part.indexOf('=')
+            if (i > 0 && part.substring(0, i) == name) {
+                val v = part.substring(i + 1)
+                return runCatching { java.net.URLDecoder.decode(v, "UTF-8") }.getOrDefault(v)
+            }
+        }
+        return ""
+    }
 
     private fun writeJson(output: OutputStream, code: Int, body: JSONObject) {
         val bytes = body.toString().toByteArray(Charsets.UTF_8)
