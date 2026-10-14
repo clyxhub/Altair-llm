@@ -89,7 +89,9 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_TOOLS=ON \
             -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_PREFIX_PATH=/tmp/spirv-install
+            -DCMAKE_PREFIX_PATH=/tmp/spirv-install \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH
           cmake --build build-android --target llama-server -j"$(nproc)"
           OUT="$GITHUB_WORKSPACE/android/app/src/main/jniLibs/arm64-v8a"
           mkdir -p "$OUT"
