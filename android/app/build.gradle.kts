@@ -34,6 +34,14 @@ android {
         }
     }
 
+    // Extract native libs to nativeLibraryDir so llama-server can be exec()'d
+    // (direct-from-APK loading would leave no executable file on disk).
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
