@@ -105,9 +105,9 @@ jobs:
           OUT="$GITHUB_WORKSPACE/android/app/src/main/jniLibs/arm64-v8a"
           mkdir -p "$OUT"
           cp build-android/bin/llama-server "$OUT/libaltairserver.so"
-          for lib in libllama.so libggml.so libggml-base.so libggml-cpu.so libggml-vulkan.so; do
-            find build-android -name "$lib" -exec cp {} "$OUT" \;
-          done
+          # v0.6.0 splits the server across several shared libs (llama-server-impl,
+          # llama-common, mtmd, ...) — copy every built shared lib
+          find build-android -name "lib*.so" -exec cp {} "$OUT" \;
           ls -la "$OUT"
 
       - name: Build APK (debug)
