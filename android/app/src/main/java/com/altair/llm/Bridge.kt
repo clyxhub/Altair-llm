@@ -76,8 +76,9 @@ class Bridge(private val activity: Activity) {
     fun deleteModel(name: String): String {
         return try {
             val dir = EngineManager.modelsDir()
+            val all = dir.listFiles(java.io.FileFilter { x -> x.isFile }) ?: emptyArray()
             var deleted = false
-            for (f in dir.listFiles { x -> x.isFile } ?: emptyArray()) {
+            for (f in all) {
                 if (f.name == name || f.name == "$name.part") { f.delete(); deleted = true }
             }
             JSONObject().put("ok", deleted).toString()

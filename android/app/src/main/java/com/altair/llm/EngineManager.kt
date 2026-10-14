@@ -44,11 +44,11 @@ object EngineManager {
     fun listLocalModels(): String {
         val arr = org.json.JSONArray()
         val dir = modelsDir()
-        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".gguf") }?.sortedBy { it.name } ?: emptyList()
-        val mmprojs = dir.listFiles { f -> f.isFile && f.name.endsWith(".gguf") && f.name.contains("mmproj", ignoreCase = true) } ?: emptyList()
+        val ggufFilter = java.io.FileFilter { f -> f.isFile && f.name.endsWith(".gguf") }
+        val files: List<File> = dir.listFiles(ggufFilter)?.sortedBy { it.name } ?: emptyList()
+        val mmprojs: List<File> = files.filter { it.name.contains("mmproj", ignoreCase = true) }
         for (f in files) {
-            val isMmproj = f.name.contains("mmproj", ignoreCase = true)
-            if (isMmproj) continue
+            if (f.name.contains("mmproj", ignoreCase = true)) continue
             val entry = org.json.JSONObject()
                 .put("id", f.name.removeSuffix(".gguf"))
                 .put("path", f.absolutePath)
